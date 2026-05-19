@@ -16,6 +16,7 @@ use crate::commands::logs as logs_commands;
 use crate::commands::proxy_config as proxy_config_commands;
 use crate::commands::rule_set as rule_set_commands;
 use crate::commands::subscription as subscription_commands;
+use crate::commands::system_proxy as system_proxy_commands;
 use crate::services::{app_config_store, core_process, domain_store};
 use crate::state::app_state::AppState;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -81,7 +82,10 @@ pub fn run() {
             logs_commands::logs_list,
             logs_commands::logs_append,
             logs_commands::logs_clear,
-            capability_commands::gui_capabilities_snapshot
+            capability_commands::gui_capabilities_snapshot,
+            system_proxy_commands::system_proxy_enable,
+            system_proxy_commands::system_proxy_disable,
+            system_proxy_commands::system_proxy_status
         ])
         .setup(|app| {
             // 创建系统托盘菜单

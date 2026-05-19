@@ -1,45 +1,213 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { CoreStatus, LogEntry, Capability } from '$lib/types/core';
+import type { CoreProcessStatus, CoreCallResult, CoreEndpoint, CoreEventSubscription, CoreConfigSnapshot, CoreConfigExportResult, CoreIpcOptions, AppError } from '$lib/types/core';
+import type { AppConfig, AppConfigPatch } from '$lib/types/app-config';
+import type { LogEntry, LogAppend, LogQuery } from '$lib/types/logs';
+import type { GuiCapabilitySnapshot } from '$lib/types/capability';
 
-export type { CoreStatus, LogEntry, Capability };
+export type { CoreProcessStatus, CoreCallResult, CoreEndpoint, CoreEventSubscription, CoreConfigSnapshot, CoreConfigExportResult, CoreIpcOptions, AppError, GuiCapabilitySnapshot };
 
-// 内核进程
-export async function getCoreStatus(): Promise<CoreStatus> {
-  return invoke('core_status');
+// ── Core process lifecycle ──
+
+export async function getCoreProcessStatus(): Promise<CoreProcessStatus> {
+  return invoke('core_process_status');
 }
 
-export async function startCore(): Promise<void> {
+export async function startCoreProcess(): Promise<CoreProcessStatus> {
   return invoke('core_process_start');
 }
 
-export async function stopCore(): Promise<void> {
+export async function stopCoreProcess(): Promise<CoreProcessStatus> {
   return invoke('core_process_stop');
 }
 
-// 内核配置
-export async function getCoreConfig(): Promise<Record<string, unknown>> {
+// ── Core IPC ──
+
+export async function getCoreStatus(options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_status', { options });
+}
+
+export async function pingCore(options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_ipc_ping', { options });
+}
+
+export async function queryCore(request: unknown, options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_ipc_query', { request, options });
+}
+
+export async function commandCore(method: string, params?: unknown, options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_ipc_command', { method, params, options });
+}
+
+export async function getCapabilities(options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_get_capabilities', { options });
+}
+
+export async function getCoreHealth(options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_get_health', { options });
+}
+
+export async function getCoreConfig(options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_get_config', { options });
+}
+
+export async function getCoreRuntime(options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_get_runtime', { options });
+}
+
+export async function getCoreStats(options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_get_stats', { options });
+}
+
+export async function getCorePolicies(options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_get_policies', { options });
+}
+
+// ── Policies ──
+
+export async function getPolicies(options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_get_policies', { options });
+}
+
+export async function selectPolicy(policyTag: string, targetTag: string, options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_select_policy', { policyTag, targetTag, options });
+}
+
+export async function probePolicy(policyTag: string, options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_probe_policy', { policyTag, options });
+}
+
+// ── Flows ──
+
+export interface FlowInfo {
+  flowId: string;
+  source: string;
+  destination: string;
+  protocol: string;
+  bytesUp: number;
+  bytesDown: number;
+  startedAtUnixMs: number;
+}
+
+export async function queryFlows(): Promise<FlowInfo[]> {
+  const result = await invoke<CoreCallResult>('core_ipc_query', {
+    request: 'Flows',
+    options: undefined,
+  });
+  if (!result.available || !result.response) return [];
+  return parseFlows(result.response);
+}
+
+function parseFlows(data: unknown): FlowInfo[] {
+  if (!data || typeof data !== 'object') return [];
+
+  const obj = data as Record<string, unknown>;
+  // Try known container keys
+  let arr: unknown[] = [];
+  for (const key of ['flows', 'connections', 'data', 'items', 'result']) {
+    const val = obj[key];
+    if (Array.isArray(val)) { arr = val; break; }
+  }
+  // If no array found, check if the response itself is an array
+  if (arr.length === 0 && Array.isArray(data)) {
+    arr = data as unknown[];
+  }
+
+  return arr.map(parseSingleFlow).filter((f): f is FlowInfo => f !== null);
+}
+
+function parseSingleFlow(item: unknown): FlowInfo | null {
+  if (!item || typeof item !== 'object') return null;
+  const obj = item as Record<string, unknown>;
+
+  const flowId = obj['flow_id'] || obj['flowId'] || obj['id'] || obj['connection_id'] || obj['connectionId'];
+  if (!flowId || typeof flowId !== 'string') return null;
+
+  const host = (obj['host'] || obj['destination'] || obj['dest'] || obj['remote'] || obj['addr'] || obj['address'] || '');
+  const port = obj['port'] || obj['dest_port'] || obj['destPort'] || obj['remote_port'] || obj['remotePort'];
+
+  return {
+    flowId: flowId,
+    source: typeof obj['source'] === 'string' ? obj['source'] : '-',
+    destination: typeof host === 'string'
+      ? host + (typeof port === 'number' ? `:${port}` : '')
+      : '-',
+    protocol: typeof obj['protocol'] === 'string' ? obj['protocol'] : typeof obj['type'] === 'string' ? obj['type'] : 'tcp',
+    bytesUp: typeof obj['bytes_up'] === 'number' ? obj['bytes_up'] : typeof obj['bytesUp'] === 'number' ? obj['bytesUp'] : typeof obj['tx'] === 'number' ? obj['tx'] : 0,
+    bytesDown: typeof obj['bytes_down'] === 'number' ? obj['bytes_down'] : typeof obj['bytesDown'] === 'number' ? obj['bytesDown'] : typeof obj['rx'] === 'number' ? obj['rx'] : 0,
+    startedAtUnixMs: typeof obj['started_at'] === 'number' ? obj['started_at'] : typeof obj['startedAt'] === 'number' ? obj['startedAt'] : typeof obj['created_at'] === 'number' ? obj['created_at'] : Date.now(),
+  };
+}
+
+export async function closeFlow(flowId: string, options?: CoreIpcOptions): Promise<CoreCallResult> {
+  return invoke('core_close_flow', { flowId, options });
+}
+
+// ── Core events ──
+
+export async function startCoreEvents(events?: string[], options?: CoreIpcOptions): Promise<CoreEventSubscription> {
+  return invoke('core_events_start', { events, options });
+}
+
+export async function stopCoreEvents(): Promise<number> {
+  return invoke('core_events_stop');
+}
+
+// ── Core config ──
+
+export async function getCoreConfigSnapshot(): Promise<CoreConfigSnapshot> {
   return invoke('core_config_get');
 }
 
-// 应用配置
-export async function getAppConfig(): Promise<Record<string, unknown>> {
+export async function exportActiveCoreConfig(): Promise<CoreConfigExportResult> {
+  return invoke('core_config_export_active');
+}
+
+// ── App config ──
+
+export async function getAppConfig(): Promise<AppConfig> {
   return invoke('app_config_get');
 }
 
-export async function updateAppConfig(config: Record<string, unknown>): Promise<void> {
-  return invoke('app_config_update', { config });
+export async function updateAppConfig(patch: AppConfigPatch): Promise<AppConfig> {
+  return invoke('app_config_update', { patch });
 }
 
-// 日志
-export async function getLogs(): Promise<LogEntry[]> {
-  return invoke('logs_list');
+// ── Logs ──
+
+export async function getLogs(query?: LogQuery): Promise<LogEntry[]> {
+  return invoke('logs_list', { query });
+}
+
+export async function appendLog(input: LogAppend): Promise<LogEntry> {
+  return invoke('logs_append', { input });
 }
 
 export async function clearLogs(): Promise<void> {
   return invoke('logs_clear');
 }
 
-// 能力快照
-export async function getCapabilities(): Promise<Capability[]> {
+// ── GUI capabilities snapshot ──
+
+export async function getGuiCapabilitiesSnapshot(): Promise<GuiCapabilitySnapshot> {
   return invoke('gui_capabilities_snapshot');
+}
+
+// ── System proxy ──
+
+export interface SystemProxyStatus {
+  enabled: boolean;
+  host: string;
+  port: number;
+}
+
+export async function enableSystemProxy(): Promise<SystemProxyStatus> {
+  return invoke('system_proxy_enable');
+}
+
+export async function disableSystemProxy(): Promise<SystemProxyStatus> {
+  return invoke('system_proxy_disable');
+}
+
+export async function getSystemProxyStatus(): Promise<SystemProxyStatus> {
+  return invoke('system_proxy_status');
 }

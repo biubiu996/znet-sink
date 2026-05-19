@@ -1,9 +1,22 @@
 <script lang="ts">
-  import { listRuleSets, removeRuleSet, type RuleSet } from '$lib/services/config';
+  import { listRuleSets, removeRuleSet, upsertRuleSet } from '$lib/services/config';
+  import type { RuleSetProfile, RuleSetUpsert } from '$lib/types/domain';
 
-  let ruleSets = $state<RuleSet[]>([]);
+  let ruleSets = $state<RuleSetProfile[]>([]);
   let loading = $state(true);
-  let showModal = $state(false);
+  let showForm = $state(false);
+  let saving = $state(false);
+  let editingId = $state<string | null>(null);
+
+  let form = $state({
+    name: '',
+    format: 'auto',
+    kind: 'remote' as 'remote' | 'file' | 'inline',
+    url: '',
+    path: '',
+    content: '',
+    enabled: true,
+  });
 
   async function refresh() {
     loading = true;
@@ -22,6 +35,65 @@
     await refresh();
   }
 
+  function openCreate() {
+    editingId = null;
+    form = { name: '', format: 'auto', kind: 'remote', url: '', path: '', content: '', enabled: true };
+    showForm = true;
+  }
+
+  function openEdit(rs: RuleSetProfile) {
+    editingId = rs.id;
+    form = {
+      name: rs.name,
+      format: rs.format,
+      kind: rs.source.kind as 'remote' | 'file' | 'inline',
+      url: rs.source.url ?? '',
+      path: rs.source.path ?? '',
+      content: rs.source.content ? JSON.stringify(rs.source.content, null, 2) : '',
+      enabled: rs.enabled,
+    };
+    showForm = true;
+  }
+
+  async function handleSave() {
+    if (!form.name.trim()) return;
+    saving = true;
+    try {
+      let sourceContent: unknown = undefined;
+      if (form.kind === 'inline' && form.content.trim()) {
+        try {
+          sourceContent = JSON.parse(form.content);
+        } catch {
+          alert('内联规则内容不是有效的 JSON');
+          saving = false;
+          return;
+        }
+      }
+
+      const input: RuleSetUpsert = {
+        id: editingId ?? undefined,
+        name: form.name.trim(),
+        format: form.format || undefined,
+        enabled: form.enabled,
+        source: {
+          kind: form.kind,
+          url: form.kind === 'remote' ? (form.url.trim() || undefined) : undefined,
+          path: form.kind === 'file' ? (form.path.trim() || undefined) : undefined,
+          content: form.kind === 'inline' ? (sourceContent ?? undefined) : undefined,
+        },
+      };
+
+      await upsertRuleSet(input);
+      showForm = false;
+      await refresh();
+    } catch (e) {
+      console.error('Failed to save rule set:', e);
+      alert(`保存失败: ${e}`);
+    } finally {
+      saving = false;
+    }
+  }
+
   $effect(() => {
     refresh();
   });
@@ -31,7 +103,7 @@
   <div class="flex items-center justify-between flex-shrink-0">
     <h3 class="text-sm font-bold text-foreground">规则集</h3>
     <button
-      onclick={() => showModal = true}
+      onclick={openCreate}
       class="px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium"
     >
       + 新增
@@ -40,22 +112,32 @@
 
   {#if loading}
     <div class="flex-1 flex items-center justify-center text-xs text-muted-foreground">加载中...</div>
-  {:else if ruleSets.length === 0}
-    <div class="flex-1 flex items-center justify-center text-xs text-muted-foreground">暂无规则集</div>
+  {:else if ruleSets.length === 0 && !showForm}
+    <div class="flex-1 flex items-center justify-center text-xs text-muted-foreground">暂无规则集，点击新增添加</div>
   {:else}
     <div class="flex-1 overflow-y-auto min-h-0">
       <div class="grid grid-cols-1 gap-2">
-        {#each ruleSets as ruleSet (ruleSet.id)}
-          <div class="bg-muted/30 border border-card-border rounded-lg p-3 flex items-center justify-between">
+        {#each ruleSets as rs (rs.id)}
+          <div
+            role="button"
+            tabindex="0"
+            onclick={() => openEdit(rs)}
+            onkeydown={(e) => e.key === 'Enter' && openEdit(rs)}
+            class="bg-muted/30 border border-card-border rounded-lg p-3 flex items-center justify-between text-left hover:bg-muted/50 transition-colors cursor-pointer"
+          >
             <div class="flex flex-col gap-1">
               <div class="flex items-center gap-2">
-                <span class="text-xs font-medium text-foreground">{ruleSet.name}</span>
-                <span class="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{ruleSet.type}</span>
+                <span class="text-xs font-medium text-foreground">{rs.name}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{rs.format}</span>
+                <span class="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{rs.source.kind}</span>
+                {#if !rs.enabled}
+                  <span class="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-500">已停用</span>
+                {/if}
               </div>
-              <span class="text-[10px] text-muted-foreground font-mono">{ruleSet.rule_count} 条规则</span>
+              <span class="text-[10px] text-muted-foreground font-mono">{rs.id}</span>
             </div>
             <button
-              onclick={() => handleRemove(ruleSet.id)}
+              onclick={(e: MouseEvent) => { e.stopPropagation(); handleRemove(rs.id); }}
               class="text-[10px] px-2 py-1 rounded text-red-500 hover:bg-red-500/10"
             >
               删除
@@ -65,19 +147,106 @@
       </div>
     </div>
   {/if}
+</div>
 
-  {#if showModal}
-    <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onclick={() => showModal = false}>
-      <div class="bg-card border border-card-border rounded-xl p-4 w-96" onclick={(e) => e.stopPropagation()}>
-        <h4 class="text-sm font-bold text-foreground mb-4">新增规则集</h4>
-        <p class="text-xs text-muted-foreground">功能开发中...</p>
+{#if showForm}
+  <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onclick={() => showForm = false} role="dialog">
+    <div class="bg-card border border-card-border rounded-xl p-5 w-[420px] max-h-[80vh] overflow-y-auto" onclick={(e) => e.stopPropagation()}>
+      <h4 class="text-sm font-bold text-foreground mb-4">{editingId ? '编辑' : '新增'}规则集</h4>
+
+      <div class="space-y-3">
+        <div>
+          <label class="text-[10px] text-muted-foreground block mb-1">名称 *</label>
+          <input
+            bind:value={form.name}
+            placeholder="例如: 广告拦截规则"
+            class="w-full px-3 py-2 rounded-lg bg-muted text-xs text-foreground border border-card-border focus:border-primary outline-none"
+          />
+        </div>
+
+        <div>
+          <label class="text-[10px] text-muted-foreground block mb-1">格式</label>
+          <select
+            bind:value={form.format}
+            class="w-full px-3 py-2 rounded-lg bg-muted text-xs text-foreground border border-card-border outline-none"
+          >
+            <option value="auto">自动检测</option>
+            <option value="yaml">YAML</option>
+            <option value="json">JSON</option>
+            <option value="text">纯文本</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="text-[10px] text-muted-foreground block mb-1">来源类型</label>
+          <div class="flex bg-muted rounded-lg p-0.5 text-[10px] font-bold">
+            {#each ['remote', 'file', 'inline'] as kind}
+              <button
+                onclick={() => form.kind = kind as typeof form.kind}
+                class="flex-1 px-3 py-1 rounded-md transition-all {form.kind === kind ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}"
+              >
+                {kind === 'remote' ? '远程' : kind === 'file' ? '文件' : '内联'}
+              </button>
+            {/each}
+          </div>
+        </div>
+
+        {#if form.kind === 'remote'}
+          <div>
+            <label class="text-[10px] text-muted-foreground block mb-1">URL *</label>
+            <input
+              bind:value={form.url}
+              placeholder="https://example.com/rules.yaml"
+              class="w-full px-3 py-2 rounded-lg bg-muted text-xs text-foreground border border-card-border focus:border-primary outline-none font-mono"
+            />
+          </div>
+        {:else if form.kind === 'file'}
+          <div>
+            <label class="text-[10px] text-muted-foreground block mb-1">文件路径 *</label>
+            <input
+              bind:value={form.path}
+              placeholder="/path/to/rules.yaml"
+              class="w-full px-3 py-2 rounded-lg bg-muted text-xs text-foreground border border-card-border focus:border-primary outline-none font-mono"
+            />
+          </div>
+        {:else}
+          <div>
+            <label class="text-[10px] text-muted-foreground block mb-1">内联 JSON 内容</label>
+            <textarea
+              bind:value={form.content}
+              placeholder={"内联规则 JSON..."}
+              rows={6}
+              class="w-full px-3 py-2 rounded-lg bg-muted text-xs text-foreground border border-card-border focus:border-primary outline-none font-mono resize-y"
+            ></textarea>
+          </div>
+        {/if}
+
+        <div class="flex items-center justify-between">
+          <span class="text-[10px] text-muted-foreground">启用</span>
+          <button
+            onclick={() => form.enabled = !form.enabled}
+            class="w-9 h-5 rounded-full relative transition-colors {form.enabled ? 'bg-primary' : 'bg-muted'}"
+          >
+            <div class="w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all shadow {form.enabled ? 'left-4' : 'left-0.5'}"></div>
+          </button>
+        </div>
+      </div>
+
+      <div class="flex gap-2 mt-5">
         <button
-          onclick={() => showModal = false}
-          class="mt-4 w-full py-2 rounded-lg bg-muted text-muted-foreground text-xs font-medium"
+          onclick={() => showForm = false}
+          class="flex-1 py-2 rounded-lg bg-muted text-muted-foreground text-xs font-medium"
         >
-          关闭
+          取消
+        </button>
+        <button
+          onclick={handleSave}
+          disabled={saving || !form.name.trim()}
+          class="flex-1 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-medium disabled:opacity-50"
+        >
+          {saving ? '保存中...' : '保存'}
         </button>
       </div>
     </div>
-  {/if}
-</div>
+  </div>
+{/if}

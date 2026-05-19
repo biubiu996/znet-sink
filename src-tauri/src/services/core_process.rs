@@ -5,7 +5,7 @@ use tauri::State;
 
 use crate::errors::{AppError, AppResult};
 use crate::models::{
-    core_process::{CoreProcessState, CoreProcessStatus},
+    core_process::{CoreProcessExitReason, CoreProcessState, CoreProcessStatus},
     logs::{LogLevel, LogSource},
 };
 use crate::services::{common::lock, core_config, logs};
@@ -42,6 +42,7 @@ pub fn start(state: State<'_, AppState>) -> AppResult<CoreProcessStatus> {
             started_at_unix_ms: None,
             exited_at_unix_ms: None,
             exit_code: None,
+            exit_reason: None,
             last_error: None,
         };
     }
@@ -70,6 +71,7 @@ pub fn start(state: State<'_, AppState>) -> AppResult<CoreProcessStatus> {
                 started_at_unix_ms: Some(crate::services::common::now_unix_ms()),
                 exited_at_unix_ms: None,
                 exit_code: None,
+                exit_reason: None,
                 last_error: None,
             };
             process.child = Some(child);
@@ -129,6 +131,7 @@ pub fn stop(state: State<'_, AppState>) -> AppResult<CoreProcessStatus> {
             process.status.state = CoreProcessState::Exited;
             process.status.pid = None;
             process.status.exit_code = status.code();
+            process.status.exit_reason = Some(CoreProcessExitReason::Stopped);
             process.status.exited_at_unix_ms = Some(crate::services::common::now_unix_ms());
             process.status.last_error = None;
 
@@ -178,6 +181,14 @@ fn refresh_locked_status(
             process.status.state = CoreProcessState::Exited;
             process.status.pid = None;
             process.status.exit_code = status.code();
+            // Only set exit_reason if not already set by stop()
+            if process.status.exit_reason.is_none() {
+                process.status.exit_reason = if status.success() {
+                    Some(CoreProcessExitReason::Exited)
+                } else {
+                    Some(CoreProcessExitReason::Crashed)
+                };
+            }
             process.status.exited_at_unix_ms = Some(crate::services::common::now_unix_ms());
             process.child = None;
         }

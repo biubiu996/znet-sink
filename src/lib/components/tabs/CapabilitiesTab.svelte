@@ -1,13 +1,14 @@
 <script lang="ts">
-  import { getCapabilities, type Capability } from '$lib/services/core';
+  import { getGuiCapabilitiesSnapshot } from '$lib/services/core';
+  import type { GuiCapabilitySnapshot } from '$lib/types/capability';
 
-  let capabilities = $state<Capability[]>([]);
+  let snapshot = $state<GuiCapabilitySnapshot | null>(null);
   let loading = $state(true);
 
   async function refresh() {
     loading = true;
     try {
-      capabilities = await getCapabilities();
+      snapshot = await getGuiCapabilitiesSnapshot();
     } catch (e) {
       console.error('Failed to load capabilities:', e);
     } finally {
@@ -33,21 +34,48 @@
 
   {#if loading}
     <div class="flex-1 flex items-center justify-center text-xs text-muted-foreground">加载中...</div>
-  {:else if capabilities.length === 0}
+  {:else if !snapshot}
     <div class="flex-1 flex items-center justify-center text-xs text-muted-foreground">暂无可用能力</div>
   {:else}
-    <div class="flex-1 overflow-y-auto min-h-0">
-      <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-        {#each capabilities as cap (cap.id)}
-          <div class="bg-muted/30 border border-card-border rounded-lg p-3 flex flex-col gap-2">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-medium text-foreground">{cap.name}</span>
-              <div class="w-2 h-2 rounded-full {!cap.available ? 'bg-muted' : cap.enabled ? 'bg-green-500' : 'bg-yellow-500'}"></div>
+    <div class="flex-1 overflow-y-auto min-h-0 space-y-4">
+      <!-- 管理能力 -->
+      <div>
+        <h4 class="text-xs font-medium text-foreground mb-2">管理能力</h4>
+        <div class="grid grid-cols-3 md:grid-cols-4 gap-2">
+          {#each snapshot.management as item (item.key)}
+            <div class="bg-muted/30 border border-card-border rounded-lg p-2 flex flex-col gap-1">
+              <div class="flex items-center justify-between">
+                <span class="text-[10px] font-medium text-foreground">{item.key}</span>
+                <div class="w-1.5 h-1.5 rounded-full {item.enabled ? 'bg-green-500' : 'bg-muted'}"></div>
+              </div>
             </div>
-            <p class="text-[10px] text-muted-foreground line-clamp-2">{cap.description}</p>
-          </div>
-        {/each}
+          {/each}
+        </div>
       </div>
+
+      <!-- 代理特性 -->
+      <div>
+        <h4 class="text-xs font-medium text-foreground mb-2">代理特性</h4>
+        <div class="grid grid-cols-3 md:grid-cols-4 gap-2">
+          {#each snapshot.proxyFeatures as item (item.key)}
+            <div class="bg-muted/30 border border-card-border rounded-lg p-2 flex flex-col gap-1">
+              <div class="flex items-center justify-between">
+                <span class="text-[10px] font-medium text-foreground">{item.key}</span>
+                <div class="w-1.5 h-1.5 rounded-full {item.enabled ? 'bg-green-500' : 'bg-yellow-500'}"></div>
+              </div>
+              {#if item.reason}
+                <span class="text-[9px] text-muted-foreground">{item.reason}</span>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      </div>
+
+      {#if snapshot.activeProxyConfigId}
+        <div class="text-[10px] text-muted-foreground">
+          活跃配置: <span class="font-mono">{snapshot.activeProxyConfigId}</span>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>

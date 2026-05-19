@@ -11,3 +11,4 @@ pub mod logs;
 pub mod proxy_config;
 pub mod rule_set;
 pub mod subscription;
+pub mod system_proxy;

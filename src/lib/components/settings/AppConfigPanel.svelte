@@ -1,9 +1,10 @@
 <script lang="ts">
   import { getAppConfig, updateAppConfig } from '$lib/services/core';
   import { store } from '$lib/services/store.svelte';
-  import { applyTheme, type ThemeMode } from '$lib/services/theme.svelte';
+  import { setTheme, type ThemeMode } from '$lib/services/theme.svelte';
+  import type { AppConfig } from '$lib/types/app-config';
 
-  let config = $state<Record<string, unknown> | null>(null);
+  let config = $state<AppConfig | null>(null);
   let loading = $state(false);
 
   async function refreshConfig() {
@@ -14,13 +15,13 @@
     }
   }
 
-  async function handleChange(key: string, value: unknown) {
+  async function toggleCoreSetting(key: 'autoStart' | 'autoConnect') {
     if (!config) return;
     loading = true;
     try {
-      const newConfig = { ...config, [key]: value };
-      await updateAppConfig(newConfig);
-      config = newConfig;
+      const current = config.core[key];
+      const updated = await updateAppConfig({ core: { [key]: !current } });
+      config = updated;
     } catch (e) {
       console.error('Failed to update config:', e);
     } finally {
@@ -28,9 +29,8 @@
     }
   }
 
-  function getCoreValue(cfg: Record<string, unknown>, key: string): boolean {
-    const core = cfg.core as Record<string, unknown> | undefined;
-    return Boolean(core?.[key]);
+  function handleThemeChange(theme: ThemeMode) {
+    setTheme(theme);
   }
 
   $effect(() => {
@@ -40,7 +40,7 @@
 
 <div class="bg-card border border-card-border rounded-xl p-4">
   <h3 class="text-sm font-bold text-foreground mb-4">应用配置</h3>
-  
+
   {#if !config}
     <div class="text-xs text-muted-foreground">加载中...</div>
   {:else}
@@ -51,11 +51,7 @@
         <div class="flex bg-muted rounded-lg p-0.5 text-[10px] font-bold">
           {#each ['light', 'dark', 'system'] as theme}
             <button
-              onclick={() => {
-                const themeMode = theme as ThemeMode;
-                store.selectedTheme = themeMode;
-                applyTheme(themeMode);
-              }}
+              onclick={() => handleThemeChange(theme as ThemeMode)}
               class="px-3 py-1 rounded-md transition-all {store.selectedTheme === theme ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}"
             >
               {theme === 'light' ? '明亮' : theme === 'dark' ? '暗黑' : '跟随系统'}
@@ -87,33 +83,23 @@
       <div class="flex items-center justify-between">
         <span class="text-xs text-muted-foreground">开机自动启动内核</span>
         <button
-          onclick={() => {
-            const currentValue = getCoreValue(config!, 'auto_start');
-            handleChange('core', { ...(config!.core as object ?? {}), auto_start: !currentValue });
-          }}
+          onclick={() => toggleCoreSetting('autoStart')}
           disabled={loading}
-          class="w-9 h-5 rounded-full relative transition-colors disabled:opacity-50 {getCoreValue(config!, 'auto_start') ? 'bg-primary' : 'bg-muted'}"
-          aria-label={getCoreValue(config!, 'auto_start') ? '关闭开机自动启动' : '开启开机自动启动'}
-          title={getCoreValue(config!, 'auto_start') ? '关闭开机自动启动' : '开启开机自动启动'}
+          class="w-9 h-5 rounded-full relative transition-colors disabled:opacity-50 {config.core.autoStart ? 'bg-primary' : 'bg-muted'}"
         >
-          <div class="w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all shadow {getCoreValue(config!, 'auto_start') ? 'left-4' : 'left-0.5'}"></div>
+          <div class="w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all shadow {config.core.autoStart ? 'left-4' : 'left-0.5'}"></div>
         </button>
       </div>
 
-       <!-- TUN模式 -->
+      <!-- 自动连接 -->
       <div class="flex items-center justify-between">
-        <span class="text-xs text-muted-foreground">TUN虚拟网卡模式</span>
-         <button
-          onclick={() => {
-            const currentValue = getCoreValue(config!, 'tun_mode');
-            handleChange('core', { ...(config!.core as object ?? {}), tun_mode: !currentValue });
-          }}
+        <span class="text-xs text-muted-foreground">启动后自动连接</span>
+        <button
+          onclick={() => toggleCoreSetting('autoConnect')}
           disabled={loading}
-          class="w-9 h-5 rounded-full relative transition-colors disabled:opacity-50 {getCoreValue(config!, 'tun_mode') ? 'bg-primary' : 'bg-muted'}"
-          aria-label={getCoreValue(config!, 'tun_mode') ? '关闭TUN模式' : '开启TUN模式'}
-          title={getCoreValue(config!, 'tun_mode') ? '关闭TUN模式' : '开启TUN模式'}
+          class="w-9 h-5 rounded-full relative transition-colors disabled:opacity-50 {config.core.autoConnect ? 'bg-primary' : 'bg-muted'}"
         >
-          <div class="w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all shadow {getCoreValue(config!, 'tun_mode') ? 'left-4' : 'left-0.5'}"></div>
+          <div class="w-4 h-4 rounded-full bg-white absolute top-0.5 transition-all shadow {config.core.autoConnect ? 'left-4' : 'left-0.5'}"></div>
         </button>
       </div>
 
@@ -133,8 +119,8 @@
             <button
               onclick={() => tab.id !== 'settings' && store.toggleTabVisibility(tab.id)}
               class="px-2 py-1 rounded text-[10px] font-bold transition-all whitespace-nowrap
-                     {store.visibleTabs.includes(tab.id) 
-                       ? 'bg-primary text-primary-foreground shadow-sm' 
+                     {store.visibleTabs.includes(tab.id)
+                       ? 'bg-primary text-primary-foreground shadow-sm'
                        : 'bg-muted text-muted-foreground hover:text-foreground'}
                      {tab.id === 'settings' ? 'cursor-not-allowed' : ''}"
             >

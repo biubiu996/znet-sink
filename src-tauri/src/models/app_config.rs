@@ -81,6 +81,10 @@ impl Default for AppLogConfig {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppUiConfig {
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_ui_mode")]
+    pub ui_mode: String,
     #[serde(default)]
     pub sidebar_collapsed: bool,
     #[serde(default)]
@@ -92,6 +96,8 @@ pub struct AppUiConfig {
 impl Default for AppUiConfig {
     fn default() -> Self {
         Self {
+            theme: default_theme(),
+            ui_mode: default_ui_mode(),
             sidebar_collapsed: false,
             hidden_menu_keys: Vec::new(),
             default_route: None,
@@ -151,6 +157,8 @@ pub struct AppLogConfigPatch {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppUiConfigPatch {
+    pub theme: Option<String>,
+    pub ui_mode: Option<String>,
     pub sidebar_collapsed: Option<bool>,
     pub hidden_menu_keys: Option<Vec<String>>,
     pub default_route: Option<Option<String>>,
@@ -174,6 +182,14 @@ fn default_kernel() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_theme() -> String {
+    "system".to_string()
+}
+
+fn default_ui_mode() -> String {
+    "lite".to_string()
 }
 
 fn default_log_level() -> String {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getLogs, clearLogs } from '$lib/services/core';
-  import type { LogEntry } from '$lib/types/core';
+  import type { LogEntry } from '$lib/types/logs';
 
   let logs = $state<LogEntry[]>([]);
   let autoScroll = $state(true);
@@ -18,8 +18,8 @@
     await refreshLogs();
   }
 
-  function formatTime(ts: number): string {
-    return new Date(ts * 1000).toLocaleTimeString('zh-CN', { hour12: false });
+  function formatTime(ms: number): string {
+    return new Date(ms).toLocaleTimeString('zh-CN', { hour12: false });
   }
 
   $effect(() => {
@@ -57,7 +57,7 @@
     {:else}
       {#each logs as log (log.id)}
         <div class="flex gap-2 leading-tight">
-          <span class="text-muted-foreground whitespace-nowrap">[{formatTime(log.timestamp)}]</span>
+          <span class="text-muted-foreground whitespace-nowrap">[{formatTime(log.occurredAtUnixMs)}]</span>
           <span class="whitespace-nowrap {
             log.level === 'error' ? 'text-red-500' :
             log.level === 'warn' ? 'text-yellow-500' :

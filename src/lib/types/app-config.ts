@@ -1,0 +1,76 @@
+// Mirror of Rust models::app_config
+
+export interface AppConfig {
+  schemaVersion: string;
+  core: AppCoreConfig;
+  logs: AppLogConfig;
+  ui: AppUiConfig;
+  localProxy: AppLocalProxyConfig;
+}
+
+export interface AppCoreConfig {
+  kernel: string;
+  autoConnect: boolean;
+  autoStart: boolean;
+  executablePath?: string;
+  configPath?: string;
+  workingDir?: string;
+  socket?: string;
+}
+
+export interface AppLogConfig {
+  level: string;
+  maxEntries: number;
+}
+
+export interface AppUiConfig {
+  theme: string;        // "light" | "dark" | "system"
+  uiMode: string;       // "lite" | "pro"
+  sidebarCollapsed: boolean;
+  hiddenMenuKeys: string[];
+  defaultRoute?: string;
+}
+
+export interface AppLocalProxyConfig {
+  host: string;
+  port: number;
+  sourceProxyConfigId?: string;
+}
+
+// Patch types for partial updates
+
+export interface AppConfigPatch {
+  core?: AppCoreConfigPatch;
+  logs?: AppLogConfigPatch;
+  ui?: AppUiConfigPatch;
+  localProxy?: AppLocalProxyConfigPatch;
+}
+
+export interface AppCoreConfigPatch {
+  kernel?: string;
+  autoConnect?: boolean;
+  autoStart?: boolean;
+  executablePath?: string | null;
+  configPath?: string | null;
+  workingDir?: string | null;
+  socket?: string | null;
+}
+
+export interface AppLogConfigPatch {
+  level?: string;
+  maxEntries?: number;
+}
+
+export interface AppUiConfigPatch {
+  theme?: string;
+  uiMode?: string;
+  sidebarCollapsed?: boolean;
+  hiddenMenuKeys?: string[];
+  defaultRoute?: string | null;
+}
+
+export interface AppLocalProxyConfigPatch {
+  host?: string;
+  port?: number;
+  sourceProxyConfigId?: string | null;
+}

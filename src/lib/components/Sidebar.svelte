@@ -1,8 +1,8 @@
 <script lang="ts">
-  import type { CoreStatus } from '../types/protocol';
+  import type { CoreProcessStatus } from '$lib/types/core';
 
   interface SidebarProps {
-    status: CoreStatus;
+    status: CoreProcessStatus;
     onToggleCore: () => void;
   }
 
@@ -21,8 +21,8 @@
     <button 
       onclick={onToggleCore}
       class="w-8 h-8 rounded-xl flex items-center justify-center border text-base transition-all duration-200
-             {status.running ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300'}"
-      title={status.running ? "暂停内核" : "启动内核"}
+             {status.state === 'running' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' : 'bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300'}"
+      title={status.state === 'running' ? "暂停内核" : "启动内核"}
     >
       ⚙️
     </button>

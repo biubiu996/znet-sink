@@ -110,6 +110,7 @@ impl Default for ManagedCoreProcess {
                 started_at_unix_ms: None,
                 exited_at_unix_ms: None,
                 exit_code: None,
+                exit_reason: None,
                 last_error: None,
             },
         }

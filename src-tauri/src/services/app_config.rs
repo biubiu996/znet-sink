@@ -8,6 +8,8 @@ use crate::services::common::{lock, normalize_optional};
 use crate::state::app_state::AppState;
 
 const LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
+const THEMES: &[&str] = &["light", "dark", "system"];
+const UI_MODES: &[&str] = &["lite", "pro"];
 
 pub fn get(state: State<'_, AppState>) -> AppResult<AppConfig> {
     Ok(lock(state.app_config(), "app_config")?.clone())
@@ -71,6 +73,24 @@ pub fn update(state: State<'_, AppState>, patch: AppConfigPatch) -> AppResult<Ap
     }
 
     if let Some(ui) = patch.ui {
+        if let Some(theme) = ui.theme {
+            let theme = theme.trim().to_ascii_lowercase();
+            if !THEMES.contains(&theme.as_str()) {
+                return Err(AppError::invalid_argument(
+                    "ui.theme must be one of light, dark, system",
+                ));
+            }
+            config.ui.theme = theme;
+        }
+        if let Some(ui_mode) = ui.ui_mode {
+            let ui_mode = ui_mode.trim().to_ascii_lowercase();
+            if !UI_MODES.contains(&ui_mode.as_str()) {
+                return Err(AppError::invalid_argument(
+                    "ui.uiMode must be one of lite, pro",
+                ));
+            }
+            config.ui.ui_mode = ui_mode;
+        }
         if let Some(sidebar_collapsed) = ui.sidebar_collapsed {
             config.ui.sidebar_collapsed = sidebar_collapsed;
         }
