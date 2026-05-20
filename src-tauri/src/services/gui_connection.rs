@@ -1,0 +1,138 @@
+use std::thread;
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, State};
+
+use crate::errors::{AppError, AppResult};
+use crate::models::{
+    core_process::CoreProcessState,
+    gui_core::{GuiConnectionStatus, GuiCoreHealth},
+};
+use crate::services::{common::lock, core_config, core_process, system_proxy, zero_adapter};
+use crate::state::app_state::AppState;
+
+const HEALTH_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const HEALTH_WAIT_INTERVAL: Duration = Duration::from_millis(250);
+
+pub async fn status(state: &AppState) -> AppResult<GuiConnectionStatus> {
+    build_status(state, "status", None).await
+}
+
+pub async fn connect(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<GuiConnectionStatus> {
+    let active_proxy_config_id = active_proxy_config_id(state.inner())?;
+    core_config::export_active(state.clone())?;
+
+    let process = core_process::start(app_handle, state.clone())?;
+    if process.state != CoreProcessState::Running {
+        return build_status(
+            state.inner(),
+            "failed",
+            Some("core process did not enter running state".to_string()),
+        )
+        .await;
+    }
+
+    let health = wait_for_health(state.inner()).await?;
+    if !health.healthy {
+        return build_status(
+            state.inner(),
+            "failed",
+            Some("core health check reported unhealthy".to_string()),
+        )
+        .await;
+    }
+
+    let (host, port) = local_proxy_endpoint(state.inner())?;
+    system_proxy::enable(&host, port)?;
+
+    build_status(state.inner(), "connected", None)
+        .await
+        .map(|status| GuiConnectionStatus {
+            active_proxy_config_id,
+            ..status
+        })
+}
+
+pub async fn disconnect(state: State<'_, AppState>) -> AppResult<GuiConnectionStatus> {
+    let proxy_result = system_proxy::disable();
+    let stop_result = core_process::stop(state.clone());
+
+    let error = proxy_result
+        .err()
+        .map(|error| error.message)
+        .or_else(|| stop_result.err().map(|error| error.message));
+
+    build_status(
+        state.inner(),
+        if error.is_some() {
+            "failed"
+        } else {
+            "disconnected"
+        },
+        error,
+    )
+    .await
+}
+
+async fn build_status(
+    state: &AppState,
+    stage: &'static str,
+    error: Option<String>,
+) -> AppResult<GuiConnectionStatus> {
+    let process = core_process::refresh_status(state)?;
+    let system_proxy = system_proxy::status().ok();
+    let health = zero_adapter::core_health(state).await.ok();
+    let stats = zero_adapter::traffic_stats(state).await.unwrap_or_default();
+    let active_proxy_config_id = active_proxy_config_id(state).ok().flatten();
+    let (local_proxy_host, local_proxy_port) = local_proxy_endpoint(state)?;
+    let connected = process.state == CoreProcessState::Running
+        && health.as_ref().is_some_and(|health| health.healthy)
+        && system_proxy.as_ref().is_some_and(|proxy| {
+            proxy.enabled && proxy.host == local_proxy_host && proxy.port == local_proxy_port
+        });
+
+    Ok(GuiConnectionStatus {
+        connected,
+        stage: stage.to_string(),
+        process,
+        system_proxy,
+        health,
+        stats,
+        active_proxy_config_id,
+        local_proxy_host,
+        local_proxy_port,
+        last_error: error,
+    })
+}
+
+async fn wait_for_health(state: &AppState) -> AppResult<GuiCoreHealth> {
+    let started = Instant::now();
+    let mut last_error = None;
+
+    while started.elapsed() < HEALTH_WAIT_TIMEOUT {
+        match zero_adapter::core_health(state).await {
+            Ok(health) if health.healthy => return Ok(health),
+            Ok(health) => return Ok(health),
+            Err(error) => {
+                last_error = Some(error);
+                thread::sleep(HEALTH_WAIT_INTERVAL);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| AppError::internal("core health check timed out")))
+}
+
+fn active_proxy_config_id(state: &AppState) -> AppResult<Option<String>> {
+    Ok(lock(state.proxy_configs(), "proxy_config")?
+        .iter()
+        .find(|profile| profile.active)
+        .map(|profile| profile.id.clone()))
+}
+
+fn local_proxy_endpoint(state: &AppState) -> AppResult<(String, u16)> {
+    let config = lock(state.app_config(), "app_config")?;
+    Ok((config.local_proxy.host.clone(), config.local_proxy.port))
+}
