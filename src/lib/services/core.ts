@@ -1,10 +1,21 @@
 import { invoke } from '@tauri-apps/api/core';
+import { warning } from './toast.svelte';
 import type { CoreProcessStatus, CoreCallResult, CoreEndpoint, CoreEventSubscription, CoreConfigSnapshot, CoreConfigExportResult, CoreIpcOptions, AppError } from '$lib/types/core';
 import type { AppConfig, AppConfigPatch } from '$lib/types/app-config';
 import type { LogEntry, LogAppend, LogQuery } from '$lib/types/logs';
-import type { GuiCapabilitySnapshot } from '$lib/types/capability';
+import type { GuiCapabilitySnapshot, InteractionSurfaceSnapshot } from '$lib/types/capability';
+import type { SelfTestSnapshot, ConnectionStatus, ProxyModeStatus, CoreOverview, TrafficStats, PolicyGroup, ProxyMode } from '$lib/types/gui-api';
 
-export type { CoreProcessStatus, CoreCallResult, CoreEndpoint, CoreEventSubscription, CoreConfigSnapshot, CoreConfigExportResult, CoreIpcOptions, AppError, GuiCapabilitySnapshot };
+export type { CoreProcessStatus, CoreCallResult, CoreEndpoint, CoreEventSubscription, CoreConfigSnapshot, CoreConfigExportResult, CoreIpcOptions, AppError, GuiCapabilitySnapshot, InteractionSurfaceSnapshot };
+
+export function handleAppError(error: unknown, fallbackMessage: string): void {
+  const appError = error as { code?: string; message?: string };
+  if (appError.code === 'mode_restricted') {
+    warning(`该功能仅在专业模式下可用：${appError.message}`);
+  } else {
+    warning(appError.message || fallbackMessage);
+  }
+}
 
 // ── Core process lifecycle ──
 
@@ -192,6 +203,10 @@ export async function getGuiCapabilitiesSnapshot(): Promise<GuiCapabilitySnapsho
   return invoke('gui_capabilities_snapshot');
 }
 
+export async function getGuiInteractionSurfaceSnapshot(): Promise<InteractionSurfaceSnapshot> {
+  return invoke('gui_interaction_surface_snapshot');
+}
+
 // ── System proxy ──
 
 export interface SystemProxyStatus {
@@ -210,4 +225,43 @@ export async function disableSystemProxy(): Promise<SystemProxyStatus> {
 
 export async function getSystemProxyStatus(): Promise<SystemProxyStatus> {
   return invoke('system_proxy_status');
+}
+
+// ── GUI 业务层接口 ──
+// 所有核心业务应使用以下接口，而非直接调用 core_ipc_*
+
+export async function getGuiSelfTestSnapshot(): Promise<SelfTestSnapshot> {
+  return invoke('gui_self_test_snapshot');
+}
+
+export async function getGuiConnectionStatus(): Promise<ConnectionStatus> {
+  return invoke('gui_connection_status');
+}
+
+export async function guiConnect(): Promise<ConnectionStatus> {
+  return invoke('gui_connect');
+}
+
+export async function guiDisconnect(): Promise<ConnectionStatus> {
+  return invoke('gui_disconnect');
+}
+
+export async function getGuiProxyModeStatus(): Promise<ProxyModeStatus> {
+  return invoke('gui_proxy_mode_status');
+}
+
+export async function guiSetProxyMode(mode: ProxyMode, restartCore: boolean = true): Promise<ProxyModeStatus> {
+  return invoke('gui_set_proxy_mode', { input: { mode, restartCore } });
+}
+
+export async function getGuiCoreOverview(): Promise<CoreOverview> {
+  return invoke('gui_core_overview');
+}
+
+export async function getGuiTrafficStats(): Promise<TrafficStats> {
+  return invoke('gui_traffic_stats');
+}
+
+export async function getGuiPolicyGroups(): Promise<PolicyGroup[]> {
+  return invoke('gui_policy_groups');
 }

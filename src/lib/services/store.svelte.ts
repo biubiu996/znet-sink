@@ -1,6 +1,7 @@
 import { browser } from '$app/environment';
 import type { ThemeMode } from './theme.svelte';
-import { getAppConfig, updateAppConfig } from './core';
+import { getAppConfig, updateAppConfig, getGuiInteractionSurfaceSnapshot } from './core';
+import type { InteractionSurfaceItem } from '$lib/types/capability';
 
 export type UIMode = 'lite' | 'pro';
 
@@ -10,7 +11,16 @@ class AppStateStore {
   activeTab = $state('overview');
   selectedNodeId = $state('node-1');
   selectedTheme = $state<ThemeMode>('system');
-  visibleTabs = $state<string[]>(['overview', 'profiles', 'subscriptions', 'rules', 'connections', 'logs', 'capabilities', 'settings']);
+  visibleTabs = $state<string[]>([]);
+  interactionSurface = $state<{
+    navigation: Map<string, InteractionSurfaceItem>;
+    actions: Map<string, InteractionSurfaceItem>;
+    features: Map<string, InteractionSurfaceItem>;
+  }>({
+    navigation: new Map(),
+    actions: new Map(),
+    features: new Map(),
+  });
 
   constructor() {
     if (browser) {
@@ -22,24 +32,33 @@ class AppStateStore {
     const savedMode = localStorage.getItem('znet-ui-mode') as UIMode | null;
     const savedInit = localStorage.getItem('znet-is-init');
     const savedTheme = localStorage.getItem('znet-theme') as ThemeMode | null;
-    const savedVisibleTabs = localStorage.getItem('znet-visible-tabs');
 
     if (savedMode) this.uiMode = savedMode;
     if (savedInit === 'true') this.isInitialized = true;
     if (savedTheme) this.selectedTheme = savedTheme;
-    if (savedVisibleTabs) this.visibleTabs = JSON.parse(savedVisibleTabs);
   }
 
   /** Load app config from Rust backend and merge into store state. */
   async loadFromBackend() {
     try {
-      const config = await getAppConfig();
+      const [config, surface] = await Promise.all([
+        getAppConfig(),
+        getGuiInteractionSurfaceSnapshot(),
+      ]);
+
       if (config.ui.theme && ['light', 'dark', 'system'].includes(config.ui.theme)) {
         this.selectedTheme = config.ui.theme as ThemeMode;
       }
       if (config.ui.uiMode && ['lite', 'pro'].includes(config.ui.uiMode)) {
         this.uiMode = config.ui.uiMode as UIMode;
       }
+
+      this.interactionSurface = {
+        navigation: new Map(surface.navigation.map(item => [item.key, item])),
+        actions: new Map(surface.actions.map(item => [item.key, item])),
+        features: new Map(surface.features.map(item => [item.key, item])),
+      };
+
       this.isInitialized = true;
       if (browser) {
         localStorage.setItem('znet-is-init', 'true');
@@ -72,15 +91,69 @@ class AppStateStore {
     this.persistUiMode(mode);
   }
 
-  switchUIMode(mode: UIMode) {
-    this.uiMode = mode;
-    if (mode === 'lite' && (this.activeTab === 'rulesets' || this.activeTab === 'plugins')) {
-      this.activeTab = 'overview';
+  async switchUIMode(mode: UIMode) {
+    const previousMode = this.uiMode;
+    try {
+      await this.persistUiMode(mode);
+      await this.refreshInteractionSurface();
+
+      this.uiMode = mode;
+      if (browser) {
+        localStorage.setItem('znet-ui-mode', mode);
+      }
+
+      const navItem = this.interactionSurface.navigation.get(this.activeTab);
+      if (!navItem?.visible) {
+        this.activeTab = 'overview';
+      }
+    } catch (e) {
+      console.error('Mode switch failed:', e);
+      this.uiMode = previousMode;
+      throw e;
     }
-    if (browser) {
-      localStorage.setItem('znet-ui-mode', mode);
+  }
+
+  async refreshInteractionSurface() {
+    try {
+      const surface = await getGuiInteractionSurfaceSnapshot();
+      this.interactionSurface = {
+        navigation: new Map(surface.navigation.map(item => [item.key, item])),
+        actions: new Map(surface.actions.map(item => [item.key, item])),
+        features: new Map(surface.features.map(item => [item.key, item])),
+      };
+    } catch {
+      // Backend may not be available
     }
-    this.persistUiMode(mode);
+  }
+
+  private getFallbackNavVisible(key: string): boolean {
+    // 后端不可用时，简约模式默认可见的导航
+    const liteModeNav = ['overview', 'profiles', 'subscriptions', 'settings'];
+    return liteModeNav.includes(key);
+  }
+
+  isNavVisible(key: string): boolean {
+    const item = this.interactionSurface.navigation.get(key);
+    if (item) return item.visible;
+    return this.getFallbackNavVisible(key);
+  }
+
+  isNavOperable(key: string): boolean {
+    const item = this.interactionSurface.navigation.get(key);
+    return item?.operable ?? true;
+  }
+
+  isActionOperable(key: string): boolean {
+    const item = this.interactionSurface.actions.get(key);
+    return item?.operable ?? this.getFallbackNavVisible(key);
+  }
+
+  isFeatureVisible(key: string): boolean {
+    const item = this.interactionSurface.features.get(key);
+    if (item) return item.visible;
+    // 简约模式默认隐藏高级功能
+    const liteModeFeatures = ['connections'];
+    return liteModeFeatures.includes(key);
   }
 
   private async persistUiMode(mode: UIMode) {
@@ -91,32 +164,14 @@ class AppStateStore {
     }
   }
 
-  toggleTabVisibility(tabId: string) {
-    if (tabId === 'settings') return;
-    const index = this.visibleTabs.indexOf(tabId);
-    if (index > -1) {
-      this.visibleTabs.splice(index, 1);
-      if (this.activeTab === tabId) {
-        this.activeTab = 'settings';
-      }
-    } else {
-      this.visibleTabs.push(tabId);
-    }
-    if (browser) {
-      localStorage.setItem('znet-visible-tabs', JSON.stringify(this.visibleTabs));
-    }
-  }
-
   resetApp() {
     this.isInitialized = false;
     this.activeTab = 'overview';
     this.selectedTheme = 'system';
-    this.visibleTabs = ['overview', 'profiles', 'subscriptions', 'rules', 'connections', 'logs', 'capabilities', 'settings'];
     if (browser) {
       localStorage.removeItem('znet-is-init');
       localStorage.removeItem('znet-ui-mode');
       localStorage.removeItem('znet-theme');
-      localStorage.removeItem('znet-visible-tabs');
     }
   }
 }
