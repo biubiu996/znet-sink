@@ -39,26 +39,70 @@
     'off'
   );
 
-  function getStatusColor(): string {
-    switch (status) {
-      case 'proxy-active': return 'bg-green-500';
-      case 'core-only': return 'bg-yellow-500';
-      case 'crashed': return 'bg-red-500';
-      default: return 'bg-muted';
-    }
-  }
+  const dotColor = $derived(
+    status === 'proxy-active' ? '#22C55E' :
+    status === 'core-only'   ? '#F59E0B' :
+    status === 'crashed'     ? '#EF4444' :
+    'var(--muted-foreground)'
+  );
 
-  function getStatusText(): string {
-    switch (status) {
-      case 'proxy-active': return '代理运行中';
-      case 'core-only': return '内核已启动';
-      case 'crashed': return '内核已崩溃';
-      default: return '系统未激活';
-    }
-  }
+  const label = $derived(
+    status === 'proxy-active' ? '运行中' :
+    status === 'core-only'   ? '内核运行' :
+    status === 'crashed'     ? '异常' :
+    '未激活'
+  );
 </script>
 
-<div class="flex items-center gap-2 px-3 py-1 bg-card border border-card-border rounded-lg">
-  <div class="w-2 h-2 rounded-full {getStatusColor()} {status === 'crashed' ? 'animate-pulse' : ''}"></div>
-  <span class="text-xs font-medium text-foreground">{getStatusText()}</span>
+<div class="status-badge" class:crashed={status === 'crashed'} class:active={status === 'proxy-active'}>
+  <span
+    class="status-dot"
+    class:pulse={status === 'crashed' || status === 'core-only'}
+    style="background: {dotColor};"
+  ></span>
+  <span class="status-label">{label}</span>
 </div>
+
+<style>
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 9px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface, var(--card));
+  }
+
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .status-dot.pulse {
+    animation: pulse-dot 1.8s ease-in-out infinite;
+  }
+
+  .status-label {
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--muted-foreground);
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+  }
+
+  .status-badge.crashed .status-label {
+    color: var(--destructive);
+  }
+
+  .status-badge.active .status-label {
+    color: var(--success);
+  }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.35; }
+  }
+</style>

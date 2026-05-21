@@ -3,9 +3,6 @@
   import { handleAppError } from '$lib/services/core';
   import { listSubscriptions, syncSubscription, removeSubscription, upsertSubscription } from '$lib/services/config';
   import type { SubscriptionProfile, SubscriptionUpsert } from '$lib/types/domain';
-  import { Card, CardContent } from '$lib/components/ui/card';
-  import { Button } from '$lib/components/ui/button';
-  import { Badge } from '$lib/components/ui/badge';
 
   let subscriptions = $state<SubscriptionProfile[]>([]);
   let loading = $state(true);
@@ -33,7 +30,6 @@
       await syncSubscription(id);
       await refresh();
     } catch (e) {
-      console.error('Failed to sync subscription:', e);
       handleAppError(e, '同步订阅失败');
     } finally {
       syncingId = null;
@@ -77,7 +73,6 @@
       showForm = false;
       await refresh();
     } catch (e) {
-      console.error('Failed to save subscription:', e);
       handleAppError(e, '保存订阅失败');
     } finally {
       saving = false;
@@ -85,8 +80,8 @@
   }
 
   function formatTime(ms?: number): string {
-    if (!ms) return '-';
-    return new Date(ms).toLocaleString('zh-CN');
+    if (!ms) return '—';
+    return new Date(ms).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
 
   $effect(() => {
@@ -94,136 +89,425 @@
   });
 </script>
 
-<Card class="flex-1 overflow-hidden">
-  <CardContent class="p-4 h-full flex flex-col gap-4 animate-fade-in">
-    <div class="flex items-center justify-between flex-shrink-0">
-      <h3 class="text-sm font-bold text-foreground">订阅管理</h3>
-      <Button size="sm" onclick={openCreate}>
-        + 新增
-      </Button>
-    </div>
+<div class="desk-card flex-1 overflow-hidden flex flex-col animate-fade-in">
+  <!-- Panel header -->
+  <div class="panel-header">
+    <span class="panel-title">订阅管理</span>
+    <button class="action-btn" onclick={openCreate}>
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <line x1="6" y1="1" x2="6" y2="11"/><line x1="1" y1="6" x2="11" y2="6"/>
+      </svg>
+      新增
+    </button>
+  </div>
 
-    {#if loading}
-      <div class="flex-1 flex items-center justify-center text-xs text-muted-foreground">加载中...</div>
-    {:else if subscriptions.length === 0 && !showForm}
-      <div class="flex-1 flex items-center justify-center text-xs text-muted-foreground">暂无订阅，点击新增添加</div>
-    {:else}
-      <div class="flex-1 overflow-y-auto min-h-0">
-        <div class="grid grid-cols-1 gap-2">
-          {#each subscriptions as sub (sub.id)}
-            <div
-              role="button"
-              tabindex="0"
-              onclick={() => openEdit(sub)}
-              onkeydown={(e) => e.key === 'Enter' && openEdit(sub)}
-              class="bg-muted/30 border border-card-border rounded-lg p-3 flex items-center justify-between text-left hover:bg-muted/50 transition-colors cursor-pointer"
-            >
-              <div class="flex flex-col gap-1 min-w-0 flex-1">
-                <span class="text-xs font-medium text-foreground">{sub.name}</span>
-                <div class="flex items-center gap-2 text-[10px] text-muted-foreground">
-                  <span class="font-mono truncate max-w-[250px]">{sub.url}</span>
-                  <span>·</span>
-                  <span>上次: {formatTime(sub.lastSyncAtUnixMs)}</span>
-                </div>
-                {#if sub.lastError}
-                  <span class="text-[10px] text-red-500">{sub.lastError}</span>
-                {/if}
-              </div>
-              <div class="flex items-center gap-2 flex-shrink-0 ml-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  class="text-green-500 hover:bg-green-500/10 hover:text-green-600"
-                  onclick={(e: MouseEvent) => { e.stopPropagation(); handleSync(sub.id); }}
-                  disabled={syncingId === sub.id}
-                >
-                  {syncingId === sub.id ? '同步中' : '同步'}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  class="text-red-500 hover:bg-red-500/10 hover:text-red-600"
-                  onclick={(e: MouseEvent) => { e.stopPropagation(); handleRemove(sub.id); }}
-                >
-                  删除
-                </Button>
-              </div>
+  <!-- Content -->
+  {#if loading}
+    <div class="panel-empty">加载中...</div>
+  {:else if subscriptions.length === 0 && !showForm}
+    <div class="panel-empty">暂无订阅，点击新增添加</div>
+  {:else}
+    <div class="list-scroll">
+      {#each subscriptions as sub (sub.id)}
+        <div
+          role="button"
+          tabindex="0"
+          onclick={() => openEdit(sub)}
+          onkeydown={(e) => e.key === 'Enter' && openEdit(sub)}
+          class="list-row"
+        >
+          <div class="row-main">
+            <div class="row-top">
+              <span class="row-name">{sub.name}</span>
+              {#if sub.lastError}
+                <span class="row-tag error-tag">同步失败</span>
+              {:else}
+                <span class="row-tag ok-tag">正常</span>
+              {/if}
             </div>
-          {/each}
-        </div>
-      </div>
-    {/if}
-  </CardContent>
-</Card>
+            <div class="row-meta">
+              <span class="font-mono row-url">{sub.url}</span>
+              <span class="row-sep">·</span>
+              <span>{formatTime(sub.lastSyncAtUnixMs)}</span>
+            </div>
+            {#if sub.lastError}
+              <span class="row-error">{sub.lastError}</span>
+            {/if}
+          </div>
 
+          <!-- Actions -->
+          <div class="row-actions">
+            <button
+              class="row-action sync-btn"
+              onclick={(e: MouseEvent) => { e.stopPropagation(); handleSync(sub.id); }}
+              disabled={syncingId === sub.id}
+              title="同步订阅"
+            >
+              <svg
+                width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor"
+                stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                class="{syncingId === sub.id ? 'spin' : ''}"
+              >
+                <path d="M10 6A4 4 0 1 1 6 2M6 2L9 2L9 5"/>
+              </svg>
+            </button>
+            <button
+              class="row-action del-btn"
+              onclick={(e: MouseEvent) => { e.stopPropagation(); handleRemove(sub.id); }}
+              title="删除订阅"
+            >
+              <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+                <line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      {/each}
+    </div>
+  {/if}
+</div>
+
+<!-- Modal -->
 {#if showForm}
-  <div 
-    class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" 
+  <div
+    class="modal-backdrop"
     onclick={() => showForm = false}
     onkeydown={(e) => e.key === 'Escape' && (showForm = false)}
     role="button"
     tabindex="0"
     aria-label="关闭弹窗"
   >
-    <div 
-      class="bg-card border border-card-border rounded-xl p-5 w-[420px]" 
+    <div
+      class="modal-box"
       onclick={(e) => e.stopPropagation()}
       onkeydown={(e) => e.stopPropagation()}
       role="dialog"
       aria-modal="true"
       tabindex="-1"
     >
-      <h4 class="text-sm font-bold text-foreground mb-4">{editingId ? '编辑' : '新增'}订阅</h4>
+      <h4 class="modal-title">{editingId ? '编辑' : '新增'}订阅</h4>
 
-      <div class="space-y-3">
-        <div>
-          <label for="sub-name" class="text-[10px] text-muted-foreground block mb-1">名称 *</label>
-          <input
-            id="sub-name"
-            bind:value={form.name}
-            placeholder="例如: 官方订阅"
-            class="w-full px-3 py-2 rounded-lg bg-muted text-xs text-foreground border border-card-border focus:border-primary outline-none"
-          />
+      <div class="modal-fields">
+        <div class="field-row">
+          <label for="sub-name" class="field-label">名称 <span class="required">*</span></label>
+          <input id="sub-name" bind:value={form.name} placeholder="例如: 官方订阅" class="field-input" />
         </div>
 
-        <div>
-          <label for="sub-url" class="text-[10px] text-muted-foreground block mb-1">订阅 URL *</label>
-          <input
-            id="sub-url"
-            bind:value={form.url}
-            placeholder="https://example.com/subscription"
-            class="w-full px-3 py-2 rounded-lg bg-muted text-xs text-foreground border border-card-border focus:border-primary outline-none font-mono"
-          />
+        <div class="field-row">
+          <label for="sub-url" class="field-label">订阅 URL <span class="required">*</span></label>
+          <input id="sub-url" bind:value={form.url} placeholder="https://example.com/subscription" class="field-input field-mono" />
         </div>
 
-        <div>
-          <label for="sub-format" class="text-[10px] text-muted-foreground block mb-1">格式</label>
-          <select
-            id="sub-format"
-            bind:value={form.format}
-            class="w-full px-3 py-2 rounded-lg bg-muted text-xs text-foreground border border-card-border outline-none"
-          >
+        <div class="field-row">
+          <label for="sub-format" class="field-label">格式</label>
+          <select id="sub-format" bind:value={form.format} class="field-input">
             <option value="auto">自动检测</option>
             <option value="zero-base64-json">Zero Base64 JSON</option>
           </select>
         </div>
       </div>
 
-      <div class="flex gap-2 mt-5">
-        <button
-          onclick={() => showForm = false}
-          class="flex-1 py-2 rounded-lg bg-muted text-muted-foreground text-xs font-medium"
-        >
-          取消
-        </button>
-        <button
-          onclick={handleSave}
-          disabled={saving || !form.name.trim() || !form.url.trim()}
-          class="flex-1 py-2 rounded-lg bg-primary text-primary-foreground text-xs font-medium disabled:opacity-50"
-        >
+      <div class="modal-actions">
+        <button class="btn-ghost" onclick={() => showForm = false}>取消</button>
+        <button class="btn-primary" onclick={handleSave} disabled={saving || !form.name.trim() || !form.url.trim()}>
           {saving ? '保存中...' : '保存'}
         </button>
       </div>
     </div>
   </div>
 {/if}
+
+<style>
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 14px 10px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .panel-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--foreground);
+    letter-spacing: -0.01em;
+  }
+
+  .panel-empty {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    color: var(--muted-foreground);
+  }
+
+  .action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 500;
+    background: var(--muted);
+    color: var(--foreground);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+
+  .action-btn:hover { background: var(--surface); }
+
+  .list-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 5px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-height: 0;
+  }
+
+  .list-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 11px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
+  }
+
+  .list-row:hover {
+    background: var(--muted);
+    border-color: var(--border);
+  }
+
+  .row-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .row-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .row-name {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--foreground);
+  }
+
+  .row-tag {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--muted);
+    color: var(--muted-foreground);
+  }
+
+  .row-tag.ok-tag {
+    background: rgba(34, 197, 94, 0.1);
+    color: var(--success);
+  }
+
+  .row-tag.error-tag {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--destructive);
+  }
+
+  .row-meta {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    color: var(--muted-foreground);
+    opacity: 0.65;
+    overflow: hidden;
+  }
+
+  .row-url {
+    font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 220px;
+  }
+
+  .row-sep { opacity: 0.4; }
+
+  .row-error {
+    font-size: 10px;
+    color: var(--destructive);
+    opacity: 0.8;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .row-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+
+  .list-row:hover .row-actions {
+    opacity: 1;
+  }
+
+  .row-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--muted-foreground);
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+
+  .row-action.sync-btn:hover {
+    background: rgba(34, 197, 94, 0.12);
+    color: var(--success);
+  }
+
+  .row-action.del-btn:hover {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--destructive);
+  }
+
+  .row-action:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .spin {
+    animation: spin 0.8s linear infinite;
+  }
+
+  /* Modal */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    backdrop-filter: blur(4px);
+  }
+
+  :global(.dark) .modal-backdrop { background: rgba(0, 0, 0, 0.6); }
+
+  .modal-box {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px;
+    width: 420px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+  }
+
+  :global(.dark) .modal-box { box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); }
+
+  .modal-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--foreground);
+    margin-bottom: 16px;
+  }
+
+  .modal-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 11px;
+  }
+
+  .field-row {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .field-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--muted-foreground);
+  }
+
+  .required { color: var(--destructive); }
+
+  .field-input {
+    width: 100%;
+    padding: 7px 10px;
+    border-radius: 7px;
+    background: var(--muted);
+    border: 1px solid var(--border);
+    color: var(--foreground);
+    font-size: 12px;
+    outline: none;
+    transition: border-color 0.12s ease;
+  }
+
+  .field-input:focus { border-color: rgba(99, 102, 241, 0.4); }
+  .field-mono { font-family: var(--font-mono); }
+
+  .modal-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  .btn-ghost {
+    flex: 1;
+    padding: 8px 14px;
+    border-radius: 8px;
+    background: var(--muted);
+    color: var(--muted-foreground);
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+
+  .btn-ghost:hover { background: var(--surface); color: var(--foreground); }
+
+  .btn-primary {
+    flex: 1;
+    padding: 8px 14px;
+    border-radius: 8px;
+    background: var(--primary);
+    color: var(--primary-foreground);
+    font-size: 12px;
+    font-weight: 500;
+    border: none;
+    cursor: pointer;
+    transition: opacity 0.12s ease;
+  }
+
+  .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-primary:not(:disabled):hover { opacity: 0.88; }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+</style>

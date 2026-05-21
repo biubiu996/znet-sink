@@ -13,14 +13,33 @@
   const MAX_AUTO_RETRY = 3;
   const RETRY_DELAY_MS = 2000;
 
-  const isRunning = $derived(status?.state === 'running');
+  const isRunning  = $derived(status?.state === 'running');
   const isStarting = $derived(status?.state === 'starting');
-  const isStopped = $derived(status?.exitReason === 'stopped');
-  const isCrashed = $derived(status?.exitReason === 'crashed');
-  const hasFailed = $derived(status?.state === 'failed');
+  const isStopped  = $derived(status?.exitReason === 'stopped');
+  const isCrashed  = $derived(status?.exitReason === 'crashed');
+  const hasFailed  = $derived(status?.state === 'failed');
   const isRetrying = $derived(retryTimer !== null);
 
   const canStart = $derived(!isRunning && !isStarting && !snapshot?.warnings.length && !isRetrying);
+
+  const stateLabel = $derived(
+    loading     ? '处理中…'  :
+    isRunning   ? '运行中'   :
+    isStarting  ? '启动中'   :
+    isRetrying  ? `重试 ${retryCount}/${MAX_AUTO_RETRY}` :
+    hasFailed   ? '启动失败' :
+    isCrashed   ? '异常退出' :
+    '已停止'
+  );
+
+  const dotColor = $derived(
+    isRunning   ? '#22C55E' :
+    isStarting  ? '#F59E0B' :
+    (hasFailed || isCrashed) ? '#EF4444' :
+    'var(--muted-foreground)'
+  );
+
+  const dotPulse = $derived(isStarting || isRetrying);
 
   async function refreshStatus() {
     try {
@@ -39,21 +58,14 @@
   }
 
   function cancelRetry() {
-    if (retryTimer) {
-      clearTimeout(retryTimer);
-      retryTimer = null;
-    }
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     retryCount = 0;
     info('已取消自动重试');
   }
 
   async function toggleCore() {
     if (loading) return;
-    
-    if (isRetrying) {
-      cancelRetry();
-      return;
-    }
+    if (isRetrying) { cancelRetry(); return; }
 
     loading = true;
     try {
@@ -62,9 +74,7 @@
         success('内核已停止');
       } else {
         if (snapshot?.warnings.length) {
-          const proceed = confirm(
-            `内核配置存在以下警告:\n\n${snapshot.warnings.map(w => '• ' + w).join('\n')}\n\n是否仍然启动？`
-          );
+          const proceed = confirm(`内核配置存在以下警告:\n\n${snapshot.warnings.map(w => '• ' + w).join('\n')}\n\n是否仍然启动？`);
           if (!proceed) { loading = false; return; }
         }
         await startCoreProcess();
@@ -72,8 +82,7 @@
       }
       await refreshStatus();
     } catch (e: any) {
-      const msg = e.message ?? e ?? '未知错误';
-      toastError(`操作失败: ${msg}`);
+      toastError(`操作失败: ${e.message ?? e ?? '未知错误'}`);
     } finally {
       loading = false;
     }
@@ -91,11 +100,8 @@
       const proxyStatus = await getSystemProxyStatus();
       if (proxyStatus.enabled) {
         await disableSystemProxy();
-        if (wasCrashed) {
-          warning('内核崩溃，已自动关闭系统代理');
-        } else {
-          info('内核已停止，系统代理已关闭');
-        }
+        if (wasCrashed) warning('内核崩溃，已自动关闭系统代理');
+        else info('内核已停止，系统代理已关闭');
       }
     } catch (e) {
       console.warn('Failed to disable system proxy:', e);
@@ -105,18 +111,14 @@
   async function tryRestartCore() {
     if (retryCount >= MAX_AUTO_RETRY) {
       toastError(`内核连续崩溃 ${MAX_AUTO_RETRY} 次，已停止自动重试`);
-      retryCount = 0;
-      return;
+      retryCount = 0; return;
     }
-
     retryCount++;
-    info(`内核崩溃，正在自动重试 (${retryCount}/${MAX_AUTO_RETRY})...`);
-    
+    info(`内核崩溃，自动重试 (${retryCount}/${MAX_AUTO_RETRY})…`);
     try {
       await startCoreProcess();
       success('内核自动重启成功');
-      retryCount = 0;
-      retryTimer = null;
+      retryCount = 0; retryTimer = null;
       await refreshStatus();
     } catch (e: any) {
       toastError(`重试失败: ${e.message ?? e}`);
@@ -137,90 +139,250 @@
     }
     if (isRunning) {
       retryCount = 0;
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-        retryTimer = null;
-      }
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     }
     prevIsRunning = isRunning;
   });
 
   $effect(() => {
-    return () => {
-      if (retryTimer) {
-        clearTimeout(retryTimer);
-      }
-    };
+    return () => { if (retryTimer) clearTimeout(retryTimer); };
   });
 </script>
 
-<div class="bg-card rounded-xl p-3 flex flex-col gap-2 h-24 overflow-hidden shadow-sm transition-all duration-200 hover:shadow hover:-translate-y-0.5">
-  <div class="flex items-center justify-between flex-shrink-0">
-    <span class="text-sm font-medium text-muted-foreground truncate">内核状态</span>
-    <div class="flex items-center gap-1.5 flex-shrink-0">
-      <div class="w-2.5 h-2.5 rounded-full
-        {isRunning ? 'bg-green-500' : isStarting ? 'bg-yellow-500 animate-pulse' : hasFailed || isCrashed ? 'bg-red-500' : 'bg-muted'}">
-      </div>
-      <span class="text-sm font-bold text-foreground">
-        {isRunning ? '运行中' : isStarting ? '启动中' : isRetrying ? `重试中 ${retryCount}/${MAX_AUTO_RETRY}` : hasFailed ? '启动失败' : isCrashed ? '异常退出' : '已停止'}
-      </span>
+<div class="core-card">
+  <!-- Header row -->
+  <div class="core-header">
+    <span class="core-label">内核状态</span>
+    <div class="core-state">
+      <span class="core-dot" class:pulse={dotPulse} style="background: {dotColor};"></span>
+      <span class="core-state-text">{stateLabel}</span>
     </div>
   </div>
 
+  <!-- Info rows (when running or exited with info) -->
   {#if isRunning && status}
-    <div class="grid grid-cols-2 gap-1 text-xs flex-shrink-0">
-      <div class="flex justify-between overflow-hidden">
-        <span class="text-muted-foreground truncate">PID</span>
-        <span class="font-mono text-foreground truncate ml-1">{status.pid ?? '-'}</span>
+    <div class="core-meta">
+      <div class="core-meta-row">
+        <span class="meta-key">PID</span>
+        <span class="meta-val">{status.pid ?? '—'}</span>
       </div>
-      <div class="flex justify-between overflow-hidden">
-        <span class="text-muted-foreground truncate">内核</span>
-        <span class="font-mono text-foreground truncate ml-1">{status.kernel}</span>
+      <div class="core-meta-row">
+        <span class="meta-key">内核</span>
+        <span class="meta-val">{status.kernel}</span>
       </div>
     </div>
   {:else if status?.exitReason && status.state === 'exited'}
-    <div class="grid grid-cols-2 gap-1 text-xs flex-shrink-0">
-      <div class="flex justify-between overflow-hidden">
-        <span class="text-muted-foreground truncate">退码</span>
-        <span class="font-mono text-foreground truncate ml-1">{status.exitCode ?? '-'}</span>
+    <div class="core-meta">
+      <div class="core-meta-row">
+        <span class="meta-key">退码</span>
+        <span class="meta-val">{status.exitCode ?? '—'}</span>
       </div>
-      <div class="flex justify-between overflow-hidden">
-        <span class="text-muted-foreground truncate">原因</span>
-        <span class="font-mono truncate ml-1 {isCrashed ? 'text-red-500' : 'text-muted-foreground'}">
+      <div class="core-meta-row">
+        <span class="meta-key">原因</span>
+        <span class="meta-val" class:danger={isCrashed}>
           {isStopped ? '手动停止' : isCrashed ? '崩溃' : '自行退出'}
         </span>
       </div>
       {#if isCrashed && status.lastError}
-        <div class="col-span-2 flex justify-between overflow-hidden">
-          <span class="text-muted-foreground truncate">错误</span>
-          <span class="text-red-500 truncate ml-1 text-[10px]">{status.lastError}</span>
-        </div>
+        <div class="core-error">{status.lastError}</div>
       {/if}
     </div>
   {:else if hasFailed && status?.lastError}
-    <div class="flex justify-between overflow-hidden text-xs flex-shrink-0">
-      <span class="text-muted-foreground truncate">错误</span>
-      <span class="text-red-500 truncate ml-1">{status.lastError}</span>
-    </div>
+    <div class="core-error">{status.lastError}</div>
   {/if}
 
+  <!-- Warning -->
   {#if snapshot?.warnings.length && !isRunning && !isStarting}
-    <div class="flex items-center gap-1 text-[10px] text-red-400 flex-shrink-0" title={snapshot.warnings.join('; ')}>
-      <span class="truncate">⚠ {snapshot.warnings[0]}</span>
+    <div class="core-warning" title={snapshot.warnings.join('; ')}>
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5 1.2L9 8.8H1Z"/>
+        <line x1="5" y1="4" x2="5" y2="6"/>
+        <circle cx="5" cy="7.5" r="0.4" fill="currentColor"/>
+      </svg>
+      <span class="truncate">{snapshot.warnings[0]}</span>
     </div>
   {/if}
 
+  <!-- Toggle button -->
   <button
     onclick={toggleCore}
-    disabled={loading || !canStart}
-    class="w-full py-1.5 rounded-lg font-medium text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed mt-auto flex-shrink-0 truncate
-           {isRunning
-             ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/30'
-             : canStart
-               ? 'bg-green-500/10 text-green-500 hover:bg-green-500/20 border border-green-500/30'
-               : 'bg-muted text-muted-foreground border border-border'}"
+    disabled={loading || (!isRunning && !canStart)}
+    class="core-toggle"
+    class:running={isRunning}
+    class:startable={canStart && !isRunning}
     title={!canStart && snapshot?.warnings.length ? snapshot.warnings.join('; ') : ''}
   >
-    {loading ? '处理中...' : isRunning ? '停止内核' : isRetrying ? '取消重试' : canStart ? '启动内核' : '配置不完整'}
+    {loading ? '处理中…' : isRunning ? '停止内核' : isRetrying ? '取消重试' : canStart ? '启动内核' : '配置不完整'}
   </button>
 </div>
+
+<style>
+  .core-card {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    height: 96px;
+    padding: 11px 13px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    overflow: hidden;
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
+  }
+
+  .core-card:hover {
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.07);
+    transform: translateY(-0.5px);
+  }
+
+  :global(.dark) .core-card { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22); }
+  :global(.dark) .core-card:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32); }
+
+  /* ---- Header ---- */
+  .core-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+
+  .core-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--muted-foreground);
+  }
+
+  .core-state {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .core-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .core-dot.pulse {
+    animation: pulse-dot 1.4s ease-in-out infinite;
+  }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.3; }
+  }
+
+  .core-state-text {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--foreground);
+  }
+
+  /* ---- Meta rows ---- */
+  .core-meta {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px 8px;
+    flex-shrink: 0;
+  }
+
+  .core-meta-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    overflow: hidden;
+  }
+
+  .meta-key {
+    font-size: 11px;
+    color: var(--muted-foreground);
+    flex-shrink: 0;
+  }
+
+  .meta-val {
+    font-size: 11.5px;
+    font-family: var(--font-mono, monospace);
+    font-weight: 600;
+    color: var(--foreground);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .meta-val.danger { color: var(--destructive); }
+
+  /* ---- Warning ---- */
+  .core-warning {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--warning);
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  /* ---- Error ---- */
+  .core-error {
+    font-size: 11px;
+    color: var(--destructive);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* ---- Toggle button ---- */
+  .core-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 26px;
+    padding: 0 8px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: var(--muted);
+    color: var(--muted-foreground);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.13s ease;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: auto;
+    flex-shrink: 0;
+  }
+
+  .core-toggle:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .core-toggle.running {
+    background: rgba(239, 68, 68, 0.08);
+    border-color: rgba(239, 68, 68, 0.25);
+    color: var(--destructive);
+  }
+
+  .core-toggle.running:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.14);
+  }
+
+  .core-toggle.startable {
+    background: rgba(34, 197, 94, 0.08);
+    border-color: rgba(34, 197, 94, 0.25);
+    color: #16A34A;
+  }
+
+  .core-toggle.startable:hover:not(:disabled) {
+    background: rgba(34, 197, 94, 0.14);
+  }
+
+  :global(.dark) .core-toggle.startable { color: #4ADE80; }
+</style>

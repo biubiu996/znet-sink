@@ -35,19 +35,27 @@
   });
 </script>
 
-<main class="h-screen w-screen bg-background text-foreground flex flex-col select-none font-sans text-xs overflow-hidden transition-colors duration-300">
+<main class="h-screen w-screen flex flex-col select-none overflow-hidden transition-colors duration-200"
+  style="background: var(--background); color: var(--foreground); font-family: var(--font-sans, system-ui);">
+
+  <!-- Title bar: 44px, drag region -->
   <TitleBar />
 
-  <div class="flex-1 w-full p-4 flex flex-col gap-3 overflow-hidden">
+  <!-- Nav header: 38px -->
+  <div class="flex-shrink-0 px-5 pt-2.5">
     <AppHeader />
+  </div>
 
-    <div class="flex-1 w-full overflow-hidden flex flex-col gap-3">
-      {#if !store.isInitialized}
-        <WelcomeGuide />
-      {:else}
-        <TabContent />
-      {/if}
-    </div>
+  <!-- Separator -->
+  <div class="flex-shrink-0 mx-5" style="height: 1px; background: var(--border); opacity: 0.5;"></div>
+
+  <!-- Main content area -->
+  <div class="flex-1 min-h-0 px-5 py-3.5 flex flex-col overflow-hidden">
+    {#if !store.isInitialized}
+      <WelcomeGuide />
+    {:else}
+      <TabContent />
+    {/if}
   </div>
 
   <Toast />

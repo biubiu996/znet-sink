@@ -34,86 +34,203 @@
     setTheme(theme);
   }
 
+  const THEMES: Array<{ value: ThemeMode; label: string }> = [
+    { value: 'light',  label: '明亮' },
+    { value: 'dark',   label: '暗黑' },
+    { value: 'system', label: '跟随系统' },
+  ];
+
   $effect(() => {
     refreshConfig();
   });
 </script>
 
-<div class="bg-card border border-card-border rounded-xl p-4">
-  <h3 class="text-sm font-bold text-foreground mb-4">应用配置</h3>
+<div class="config-section">
+  <div class="config-section-title">外观</div>
+
+  <!-- Theme -->
+  <div class="config-row">
+    <div class="config-row-label">
+      <span class="label-text">主题</span>
+      <span class="label-desc">选择界面配色方案</span>
+    </div>
+    <div class="theme-segment">
+      {#each THEMES as theme}
+        <button
+          onclick={() => handleThemeChange(theme.value)}
+          class="theme-seg-btn {store.selectedTheme === theme.value ? 'active' : ''}"
+          aria-pressed={store.selectedTheme === theme.value}
+        >
+          {theme.label}
+        </button>
+      {/each}
+    </div>
+  </div>
+
+  <!-- UI Mode -->
+  <div class="config-row">
+    <div class="config-row-label">
+      <span class="label-text">界面模式</span>
+      <span class="label-desc">简约模式隐藏高级功能</span>
+    </div>
+    <div class="theme-segment">
+      <button
+        onclick={async () => await store.switchUIMode('lite')}
+        class="theme-seg-btn {store.uiMode === 'lite' ? 'active' : ''}"
+      >
+        简约
+      </button>
+      <button
+        onclick={async () => await store.switchUIMode('pro')}
+        class="theme-seg-btn {store.uiMode === 'pro' ? 'active' : ''}"
+      >
+        专业
+      </button>
+    </div>
+  </div>
+</div>
+
+<div class="config-separator"></div>
+
+<div class="config-section">
+  <div class="config-section-title">内核行为</div>
 
   {#if !config}
-    <div class="text-xs text-muted-foreground py-4">加载中...</div>
+    <div class="config-loading">加载配置中…</div>
   {:else}
-    <div class="space-y-4">
-      <!-- 主题设置 -->
-      <div class="flex items-center justify-between py-1">
-        <span class="text-xs text-muted-foreground">主题</span>
-        <div class="flex bg-muted rounded-xl p-0.5 text-[10px] font-bold shadow-inner">
-          {#each ['light', 'dark', 'system'] as theme}
-            <button
-              onclick={() => handleThemeChange(theme as ThemeMode)}
-              class="px-3 py-1.5 rounded-lg transition-all duration-200
-                     {store.selectedTheme === theme 
-                       ? 'bg-primary text-primary-foreground shadow-sm' 
-                       : 'text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10'}"
-            >
-              {theme === 'light' ? '明亮' : theme === 'dark' ? '暗黑' : '跟随系统'}
-            </button>
-          {/each}
-        </div>
+    <!-- Auto start -->
+    <div class="config-row">
+      <div class="config-row-label">
+        <span class="label-text">开机自动启动内核</span>
+        <span class="label-desc">系统启动时自动运行内核进程</span>
       </div>
+      <Switch
+        checked={config.core.autoStart}
+        onCheckedChange={() => toggleCoreSetting('autoStart')}
+        disabled={loading}
+        aria-label="开机自动启动内核"
+      />
+    </div>
 
-      <!-- UI模式 -->
-      <div class="flex items-center justify-between py-1">
-        <span class="text-xs text-muted-foreground">界面模式</span>
-        <div class="flex bg-muted rounded-xl p-0.5 text-[10px] font-bold shadow-inner">
-          <button
-            onclick={async () => await store.switchUIMode('lite')}
-            class="px-3 py-1.5 rounded-lg transition-all duration-200
-                   {store.uiMode === 'lite' 
-                     ? 'bg-primary text-primary-foreground shadow-sm' 
-                     : 'text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10'}"
-          >
-            简约
-          </button>
-          <button
-            onclick={async () => await store.switchUIMode('pro')}
-            class="px-3 py-1.5 rounded-lg transition-all duration-200
-                   {store.uiMode === 'pro' 
-                     ? 'bg-primary text-primary-foreground shadow-sm' 
-                     : 'text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10'}"
-          >
-            专业
-          </button>
-        </div>
+    <!-- Auto connect -->
+    <div class="config-row">
+      <div class="config-row-label">
+        <span class="label-text">启动后自动连接</span>
+        <span class="label-desc">内核启动完成后自动建立连接</span>
       </div>
-
-      <!-- 自动启动内核 -->
-      <div class="flex items-center justify-between py-1">
-        <span class="text-xs text-muted-foreground">开机自动启动内核</span>
-        <Switch
-          checked={config.core.autoStart}
-          onCheckedChange={() => toggleCoreSetting('autoStart')}
-          disabled={loading}
-          aria-label="开机自动启动内核"
-        />
-      </div>
-
-      <!-- 自动连接 -->
-      <div class="flex items-center justify-between py-1">
-        <span class="text-xs text-muted-foreground">启动后自动连接</span>
-        <Switch
-          checked={config.core.autoConnect}
-          onCheckedChange={() => toggleCoreSetting('autoConnect')}
-          disabled={loading}
-          aria-label="启动后自动连接"
-        />
-      </div>
-
-      <!-- 页面可见性 -->
-      <!-- 页面可见性由 Rust 后端 InteractionSurfaceSnapshot 控制 -->
-      <!-- 用户偏好设置需通过后端 API 更新后自动同步 -->
+      <Switch
+        checked={config.core.autoConnect}
+        onCheckedChange={() => toggleCoreSetting('autoConnect')}
+        disabled={loading}
+        aria-label="启动后自动连接"
+      />
     </div>
   {/if}
 </div>
+
+<style>
+  /* ---- Section ---- */
+  .config-section {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .config-section-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+    padding: 0 0 8px;
+    opacity: 0.7;
+  }
+
+  .config-separator {
+    height: 1px;
+    background: var(--border);
+    margin: 16px 0;
+  }
+
+  /* ---- Row ---- */
+  .config-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .config-row:last-child {
+    border-bottom: none;
+  }
+
+  .config-row-label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .label-text {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--foreground);
+  }
+
+  .label-desc {
+    font-size: 11.5px;
+    color: var(--muted-foreground);
+    opacity: 0.8;
+  }
+
+  /* ---- Theme segmented ---- */
+  .theme-segment {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    background: var(--segment-bg, rgba(0,0,0,0.055));
+    padding: 2px;
+    border-radius: 7px;
+    flex-shrink: 0;
+  }
+
+  .theme-seg-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 26px;
+    padding: 0 11px;
+    border-radius: 5px;
+    border: none;
+    background: transparent;
+    color: var(--muted-foreground);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.13s ease;
+    white-space: nowrap;
+  }
+
+  .theme-seg-btn:hover {
+    color: var(--foreground);
+  }
+
+  .theme-seg-btn.active {
+    background: var(--segment-active-bg, #ffffff);
+    box-shadow: var(--segment-active-shadow, 0 1px 3px rgba(0,0,0,0.12));
+    color: var(--foreground);
+    font-weight: 600;
+  }
+
+  /* ---- Loading ---- */
+  .config-loading {
+    font-size: 12px;
+    color: var(--muted-foreground);
+    padding: 14px 0;
+    text-align: center;
+    opacity: 0.6;
+  }
+</style>

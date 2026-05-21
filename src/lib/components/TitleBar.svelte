@@ -4,7 +4,7 @@
   import { store } from '$lib/services/store.svelte';
 
   let appWindow: ReturnType<typeof getCurrentWindow> | null = null;
-  let appName = $state('');
+  let appName = $state('ZNet Sink');
   let appVersion = $state('');
 
   $effect(() => {
@@ -29,47 +29,160 @@
   const handleClose = () => appWindow?.close().catch(() => {});
 </script>
 
-<div data-tauri-drag-region class="h-10 w-full flex items-center justify-between px-5 bg-background border-b border-card-border flex-shrink-0">
-  <div class="flex items-center gap-3">
-    <img src="/favicon.png" alt="Logo" class="w-4 h-4 rounded" />
-    <span class="font-black text-foreground/90 text-xs tracking-wider">{appName}</span>
-    <span class="text-[10px] text-muted-foreground">v{appVersion}</span>
-    
-    <!-- 模式切换 -->
-    <div class="relative flex bg-muted rounded-md p-0.5 gap-0.5" style="font-size: 10px;">
-      <!-- 滑动指示器 -->
-      <div
-        class="absolute top-0.5 bottom-0.5 rounded-md bg-primary shadow-sm transition-all duration-200 ease-out"
-        style="width: 36px; left: {store.uiMode === 'lite' ? '2px' : '42px'}"
-      ></div>
+<!--
+  TitleBar: h-11 (44px), compact desktop toolbar
+  Layout: [Logo + Name + Version + ModeSwitch .............. WindowControls]
+-->
+<div
+  data-tauri-drag-region
+  class="h-11 w-full flex-shrink-0 flex items-center justify-between select-none"
+  style="
+    background: var(--titlebar);
+    border-bottom: 1px solid var(--titlebar-border);
+    backdrop-filter: blur(12px) saturate(1.5);
+    -webkit-backdrop-filter: blur(12px) saturate(1.5);
+  "
+>
+  <!-- Left: App identity + mode switch inline -->
+  <div class="flex items-center gap-2 pl-3.5 min-w-0">
+    <!-- Logo: 暗黑模式下反转为白色 -->
+    <img
+      src="/favicon.png"
+      alt="Logo"
+      class="app-logo rounded-[3px] flex-shrink-0"
+      style="width: 18px; height: 18px;"
+    />
+    <!-- App name -->
+    <span
+      class="font-semibold text-foreground/90 tracking-tight flex-shrink-0"
+      style="font-size: 13px; letter-spacing: -0.01em;"
+    >
+      {appName}
+    </span>
+    <!-- Version -->
+    {#if appVersion}
+      <span
+        class="text-muted-foreground flex-shrink-0"
+        style="font-size: 11px; line-height: 1;"
+      >
+        v{appVersion}
+      </span>
+    {/if}
+
+    <!-- Divider -->
+    <span class="titlebar-divider flex-shrink-0" aria-hidden="true"></span>
+
+    <!-- Mode segmented control — inline after identity -->
+    <div class="segment-root flex-shrink-0" style="height: 26px;">
       <button
         onclick={async () => await store.switchUIMode('lite')}
-        class="relative z-10 w-9 text-center py-0.5 rounded-md font-bold transition-colors duration-200 {store.uiMode === 'lite' ? 'text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}"
-        aria-label="切换到简约模式"
-        title="切换到简约模式"
+        class="segment-item {store.uiMode === 'lite' ? 'active' : ''}"
+        style="min-width: 48px; padding: 4px 10px;"
+        aria-label="简约模式"
+        title="简约模式"
       >
         简约
       </button>
       <button
         onclick={async () => await store.switchUIMode('pro')}
-        class="relative z-10 w-9 text-center py-0.5 rounded-md font-bold transition-colors duration-200 {store.uiMode === 'pro' ? 'text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}"
-        aria-label="切换到专业模式"
-        title="切换到专业模式"
+        class="segment-item {store.uiMode === 'pro' ? 'active' : ''}"
+        style="min-width: 48px; padding: 4px 10px;"
+        aria-label="专业模式"
+        title="专业模式"
       >
         专业
       </button>
     </div>
   </div>
-  
-  <div class="flex items-center gap-1">
-    <button onclick={handleMinimize} class="w-6 h-6 rounded flex items-center justify-center hover:bg-muted text-muted-foreground hover:text-foreground transition-colors" aria-label="最小化窗口" title="最小化">
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect x="1" y="5" width="8" height="1"/></svg>
+
+  <!-- Right: Window controls -->
+  <div class="flex items-center gap-0.5 pr-2 flex-shrink-0">
+    <button
+      onclick={handleMinimize}
+      class="titlebar-btn"
+      aria-label="最小化"
+      title="最小化"
+    >
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+        <rect x="0" y="5" width="10" height="1" rx="0.5"/>
+      </svg>
     </button>
-    <button onclick={handleMaximize} class="w-6 h-6 rounded flex items-center justify-center hover:bg-muted text-muted-foreground hover:text-foreground transition-colors" aria-label="最大化/还原窗口" title="最大化">
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1"><rect x="1.5" y="1.5" width="7" height="7"/></svg>
+    <button
+      onclick={handleMaximize}
+      class="titlebar-btn"
+      aria-label="最大化"
+      title="最大化"
+    >
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1">
+        <rect x="0.5" y="0.5" width="9" height="9" rx="1"/>
+      </svg>
     </button>
-    <button onclick={handleClose} class="w-6 h-6 rounded flex items-center justify-center hover:bg-red-500 hover:text-white text-muted-foreground transition-colors" aria-label="关闭窗口" title="关闭">
-      <svg width="10" height="10" viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.5"><line x1="2" y1="2" x2="8" y2="8"/><line x1="8" y1="2" x2="2" y2="8"/></svg>
+    <button
+      onclick={handleClose}
+      class="titlebar-btn titlebar-btn-close"
+      aria-label="关闭"
+      title="关闭"
+    >
+      <svg width="10" height="10" viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+        <line x1="2" y1="2" x2="8" y2="8"/>
+        <line x1="8" y1="2" x2="2" y2="8"/>
+      </svg>
     </button>
   </div>
 </div>
+
+<style>
+  /* Logo: 暗黑模式自动反转为白色 */
+  :global(.dark) .app-logo {
+    filter: invert(1) brightness(1.1);
+  }
+
+  /* Light mode logo: 轻微降低不透明度，与背景融合 */
+  .app-logo {
+    opacity: 0.88;
+    transition: opacity 0.15s ease;
+  }
+
+  /* 分隔线 */
+  .titlebar-divider {
+    display: block;
+    width: 1px;
+    height: 16px;
+    background: var(--titlebar-border);
+    border-radius: 1px;
+    margin: 0 2px;
+  }
+
+  .titlebar-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 5px;
+    border: none;
+    background: transparent;
+    color: var(--muted-foreground);
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+
+  .titlebar-btn:hover {
+    background: var(--muted);
+    color: var(--foreground);
+  }
+
+  .titlebar-btn:active {
+    opacity: 0.7;
+  }
+
+  .titlebar-btn-close:hover {
+    background: rgba(239, 68, 68, 0.12);
+    color: #EF4444;
+  }
+
+  :global(.dark) .titlebar-btn-close:hover {
+    background: rgba(248, 113, 113, 0.14);
+    color: #F87171;
+  }
+</style>

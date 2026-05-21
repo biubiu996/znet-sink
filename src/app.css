@@ -10,33 +10,131 @@
   --color-primary-foreground: var(--primary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-surface: var(--surface);
+  --color-surface-border: var(--surface-border);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-titlebar: var(--titlebar);
+  --color-titlebar-border: var(--titlebar-border);
+
+  --font-sans: "Inter", "PingFang SC", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
 }
 
+/* ============================================
+   LIGHT MODE — Warm layered whites, Apple-like
+   ============================================ */
 :root {
-  --background: #f4f4f5;
-  --foreground: #09090b;
-  --card: #ffffff;
-  --border: rgba(9, 9, 11, 0.05);
-  --muted: #f4f4f5;
-  --muted-foreground: #71717a;
-  --primary: #09090b;
-  --primary-foreground: #ffffff;
+  color-scheme: light;
+
+  /* Core surfaces */
+  --background:        #F2F2F5;
+  --foreground:        #1A1A1E;
+
+  /* Card = frosted glass feel */
+  --card:              rgba(255, 255, 255, 0.88);
+  --border:            rgba(0, 0, 0, 0.055);
+
+  /* Surface = slightly elevated from background */
+  --surface:           rgba(255, 255, 255, 0.65);
+  --surface-border:    rgba(0, 0, 0, 0.042);
+
+  /* Primary = near-black for desktop utility feel */
+  --primary:           #18181B;
+  --primary-foreground: #FAFAFA;
+
+  /* Muted */
+  --muted:             rgba(0, 0, 0, 0.04);
+  --muted-foreground:  #78788C;
+
+  /* Accent = subtle blue tint */
+  --accent:            rgba(59, 130, 246, 0.08);
+  --accent-foreground: #1D4ED8;
+
+  /* Semantic */
+  --destructive:       #EF4444;
+  --destructive-foreground: #FFF;
+  --success:           #22C55E;
+  --warning:           #F59E0B;
+
+  /* Title bar = translucent toolbar */
+  --titlebar:          rgba(242, 242, 245, 0.82);
+  --titlebar-border:   rgba(0, 0, 0, 0.065);
+
+  /* Segmented control */
+  --segment-bg:        rgba(0, 0, 0, 0.055);
+  --segment-active-bg: #FFFFFF;
+  --segment-active-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 0 0 0.5px rgba(0,0,0,0.06);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #000000;
-    --foreground: #fafafa;
-    --card: #09090b;
-    --border: rgba(250, 250, 250, 0.04);
-    --muted: #09090b;
-    --muted-foreground: #a1a1aa;
-    --primary: #fafafa;
-    --primary-foreground: #000000;
-  }
+/* ============================================
+   DARK MODE — Deep graphite, blue-gray tint
+   ============================================ */
+.dark {
+  color-scheme: dark;
+
+  --background:        #0F1014;
+  --foreground:        #E8E8F0;
+
+  --card:              rgba(255, 255, 255, 0.042);
+  --border:            rgba(255, 255, 255, 0.064);
+
+  --surface:           rgba(255, 255, 255, 0.028);
+  --surface-border:    rgba(255, 255, 255, 0.052);
+
+  --primary:           #E8E8F0;
+  --primary-foreground: #0F1014;
+
+  --muted:             rgba(255, 255, 255, 0.06);
+  --muted-foreground:  #8E8EA8;
+
+  --accent:            rgba(99, 102, 241, 0.14);
+  --accent-foreground: #A5B4FC;
+
+  --destructive:       #F87171;
+  --destructive-foreground: #1A0A0A;
+  --success:           #4ADE80;
+  --warning:           #FBBF24;
+
+  --titlebar:          rgba(15, 16, 20, 0.88);
+  --titlebar-border:   rgba(255, 255, 255, 0.07);
+
+  --segment-bg:        rgba(255, 255, 255, 0.06);
+  --segment-active-bg: rgba(255, 255, 255, 0.12);
+  --segment-active-shadow: 0 1px 3px rgba(0,0,0,0.4), 0 0 0 0.5px rgba(255,255,255,0.08);
 }
 
-/* Desktop-style scrollbar */
+/* ============================================
+   GLOBAL BASE
+   ============================================ */
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+/* ============================================
+   SCROLLBARS — thin, desktop-native
+   ============================================ */
 ::-webkit-scrollbar {
   width: 4px;
   height: 4px;
@@ -47,14 +145,13 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--muted-foreground);
-  opacity: 0.15;
+  background: rgba(128, 128, 160, 0.2);
   border-radius: 2px;
-  transition: opacity 0.15s ease;
+  transition: background 0.15s ease;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  opacity: 0.35;
+  background: rgba(128, 128, 160, 0.38);
 }
 
 ::-webkit-scrollbar-corner {
@@ -63,5 +160,71 @@
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(113, 118, 122, 0.15) transparent;
+  scrollbar-color: rgba(128, 128, 160, 0.18) transparent;
+}
+
+/* ============================================
+   SEGMENTED CONTROL — reusable segment token
+   ============================================ */
+.segment-root {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  background: var(--segment-bg);
+  padding: 2px;
+  border-radius: 8px;
+}
+
+.segment-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 5px 12px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.segment-item:hover {
+  color: var(--foreground);
+}
+
+.segment-item.active {
+  background: var(--segment-active-bg);
+  box-shadow: var(--segment-active-shadow);
+  color: var(--foreground);
+}
+
+/* ============================================
+   ANIMATIONS — subtle & native-feeling
+   ============================================ */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.18s ease-out;
+}
+
+/* ============================================
+   UTILITY TOKENS
+   ============================================ */
+
+/* Desktop card — integrates into workspace */
+.desk-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 0 0 0.5px rgba(0, 0, 0, 0.02);
+}
+
+.dark .desk-card {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(255, 255, 255, 0.04);
 }

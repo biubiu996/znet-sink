@@ -1,51 +1,140 @@
 <script lang="ts">
   import { store } from '$lib/services/store.svelte';
-  import { NAV_TABS } from '$lib/constants/navigation';
   import AppConfigPanel from '$lib/components/settings/AppConfigPanel.svelte';
   import CoreConfigPanel from '$lib/components/settings/CoreConfigPanel.svelte';
-  import CapabilitiesTab from '$lib/components/tabs/CapabilitiesTab.svelte';
+  import AboutPanel from '$lib/components/settings/AboutPanel.svelte';
 
   let activeSection = $state('general');
 
   const sections = [
     { id: 'general', label: '通用' },
-    { id: 'core', label: '内核' },
+    { id: 'core',    label: '内核' },
     { id: 'plugins', label: '插件' },
-    { id: 'about', label: '关于' }
+    { id: 'about',   label: '关于' }
   ];
 </script>
 
-<section class="flex-1 w-full bg-card border border-card-border rounded-xl p-6 shadow-sm flex gap-8 animate-fade-in transition-colors duration-300 overflow-hidden">
-  <!-- 左侧导航菜单 -->
-  <nav class="w-32 flex flex-col gap-0.5 flex-shrink-0">
-    <div class="text-[10px] font-mono font-black text-muted-foreground px-3 py-2 uppercase tracking-widest">设置</div>
+<section class="settings-root animate-fade-in">
+  <!-- Left: sidebar nav -->
+  <nav class="settings-nav" aria-label="设置导航">
+    <div class="settings-nav-header">设置</div>
     {#each sections as section}
       <button
         onclick={() => activeSection = section.id}
-        class="text-left px-3 py-2 rounded-xl text-xs font-bold transition-all
-               {activeSection === section.id 
-                 ? 'bg-primary text-primary-foreground shadow-sm' 
-                 : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}"
+        class="settings-nav-item {activeSection === section.id ? 'active' : ''}"
       >
         {section.label}
       </button>
     {/each}
   </nav>
 
-  <!-- 右侧内容区域 -->
-  <div class="flex-1 overflow-y-auto pr-2">
+  <!-- Right: content -->
+  <div class="settings-content">
     {#if activeSection === 'general'}
-      <div class="flex flex-col gap-4">
-        <AppConfigPanel />
-      </div>
+      <AppConfigPanel />
     {:else if activeSection === 'core'}
-      <div class="flex flex-col gap-4">
-        <CoreConfigPanel />
-      </div>
+      <CoreConfigPanel />
+    {:else if activeSection === 'about'}
+      <AboutPanel />
     {:else}
-      <div class="text-center py-8">
-        <div class="text-xs text-muted-foreground">开发中...</div>
+      <div class="settings-placeholder">
+        <div class="settings-placeholder-icon">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" opacity="0.3">
+            <circle cx="11" cy="11" r="8.5"/>
+            <path d="M11 6.5v4.5"/>
+            <circle cx="11" cy="15" r="0.6" fill="currentColor"/>
+          </svg>
+        </div>
+        <span>开发中</span>
       </div>
     {/if}
   </div>
 </section>
+
+<style>
+  .settings-root {
+    flex: 1;
+    width: 100%;
+    display: flex;
+    gap: 0;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    overflow: hidden;
+    transition: box-shadow 0.2s ease;
+  }
+
+  /* ---- Sidebar nav ---- */
+  .settings-nav {
+    width: 130px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 14px 10px;
+    border-right: 1px solid var(--border);
+    background: var(--surface, rgba(0,0,0,0.018));
+  }
+
+  :global(.dark) .settings-nav {
+    background: rgba(255, 255, 255, 0.015);
+  }
+
+  .settings-nav-header {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+    padding: 4px 8px 10px;
+    opacity: 0.65;
+  }
+
+  .settings-nav-item {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding: 7px 10px;
+    border-radius: 6px;
+    border: none;
+    background: transparent;
+    color: var(--muted-foreground);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.13s ease, color 0.13s ease;
+  }
+
+  .settings-nav-item:hover {
+    background: var(--muted);
+    color: var(--foreground);
+  }
+
+  .settings-nav-item.active {
+    background: var(--primary);
+    color: var(--primary-foreground);
+    font-weight: 600;
+  }
+
+  /* ---- Content area ---- */
+  .settings-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 20px;
+    min-height: 0;
+  }
+
+  .settings-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    gap: 10px;
+    color: var(--muted-foreground);
+    font-size: 12px;
+    opacity: 0.5;
+  }
+</style>
