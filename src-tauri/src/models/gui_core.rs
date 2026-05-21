@@ -282,8 +282,10 @@ pub struct GuiEvent {
 pub enum GuiEventData {
     CoreStatus(GuiCoreHealth),
     CoreWarning(GuiWarningEvent),
+    ConfigChanged(GuiConfigChangedEvent),
     Connection(GuiConnection),
     PolicySelected(GuiPolicySelectedEvent),
+    PolicyProbeCompleted(GuiPolicyProbeCompletedEvent),
     TrafficStats(GuiTrafficStats),
     Unknown(GuiUnknownEvent),
 }
@@ -302,6 +304,20 @@ pub struct GuiPolicySelectedEvent {
     pub policy_kind: Option<String>,
     pub selected: String,
     pub previous: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiConfigChangedEvent {
+    pub changed_at_unix_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiPolicyProbeCompletedEvent {
+    pub policy_tag: String,
+    pub selected: Option<String>,
+    pub members: Vec<GuiPolicyMember>,
 }
 
 #[derive(Clone, Debug, Serialize)]

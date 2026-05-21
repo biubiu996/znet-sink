@@ -47,6 +47,35 @@ export interface CoreEventPayload {
   event: unknown;
 }
 
+export type GuiEventType =
+  | 'core.statusChanged'
+  | 'core.warning'
+  | 'core.configChanged'
+  | 'connection.started'
+  | 'connection.updated'
+  | 'connection.closed'
+  | 'policy.selected'
+  | 'policy.probeCompleted'
+  | 'traffic.sampled'
+  | 'core.unknownEvent';
+
+export interface GuiEventEnvelope {
+  eventType: GuiEventType;
+  sourceEventType: string;
+  eventId?: string;
+  sequence?: number;
+  occurredAtUnixMs?: number;
+  payload?: {
+    kind: string;
+    data?: unknown;
+  };
+}
+
+export interface GuiEventPayload {
+  generation: number;
+  event: GuiEventEnvelope;
+}
+
 export type CoreEventStatusKind = 'subscribed' | 'disconnected' | 'stopped' | 'offline' | 'error';
 
 export interface CoreEventStatus {

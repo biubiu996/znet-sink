@@ -167,18 +167,19 @@ pub(crate) fn apply_route_mode(
     let root = content.as_object_mut().ok_or_else(|| {
         AppError::invalid_argument("active proxy config content must be a JSON object")
     })?;
+    root.remove("mode");
 
     match mode {
         GuiProxyMode::Global => {
             let outbound = outbound.clone().unwrap_or_else(|| "proxy".to_string());
-            root.insert(
-                "mode".to_string(),
+            set_route_mode(
+                root,
                 serde_json::json!({ "type": "global", "outbound": outbound }),
             );
             ensure_route_final(root, serde_json::json!({ "type": "direct" }));
         }
         GuiProxyMode::Rule => {
-            root.insert("mode".to_string(), serde_json::json!({ "type": "rule" }));
+            set_route_mode(root, serde_json::json!({ "type": "rule" }));
             let outbound = outbound.clone().unwrap_or_else(|| "proxy".to_string());
             ensure_route_final(
                 root,
@@ -186,7 +187,7 @@ pub(crate) fn apply_route_mode(
             );
         }
         GuiProxyMode::Direct => {
-            root.insert("mode".to_string(), serde_json::json!({ "type": "direct" }));
+            set_route_mode(root, serde_json::json!({ "type": "direct" }));
             ensure_route_final(root, serde_json::json!({ "type": "direct" }));
         }
     };
@@ -208,6 +209,11 @@ fn ensure_object_field<'a>(
         .expect("route object is inserted before access")
 }
 
+fn set_route_mode(root: &mut Map<String, Value>, mode: Value) {
+    let route = ensure_object_field(root, "route");
+    route.insert("mode".to_string(), mode);
+}
+
 fn ensure_route_final(root: &mut Map<String, Value>, default_final: Value) {
     let route = ensure_object_field(root, "route");
     route
@@ -222,12 +228,12 @@ pub(crate) struct DetectedRouteMode {
 }
 
 pub(crate) fn detect_route_mode(content: &Value) -> Option<DetectedRouteMode> {
-    if let Some(mode_value) = content.get("mode") {
+    if let Some(mode_value) = content.get("route").and_then(|route| route.get("mode")) {
         if let Some(detected) = detect_mode_value(mode_value) {
             return Some(detected);
         }
     }
-    if let Some(mode_value) = content.get("route").and_then(|route| route.get("mode")) {
+    if let Some(mode_value) = content.get("mode") {
         if let Some(detected) = detect_mode_value(mode_value) {
             return Some(detected);
         }
@@ -254,7 +260,8 @@ pub(crate) fn detect_route_mode(content: &Value) -> Option<DetectedRouteMode> {
 
 pub(crate) fn route_global_outbound(content: &Value) -> Option<String> {
     content
-        .get("mode")
+        .get("route")
+        .and_then(|route| route.get("mode"))
         .and_then(|mode| mode.get("outbound"))
         .and_then(Value::as_str)
         .map(str::trim)
@@ -262,8 +269,7 @@ pub(crate) fn route_global_outbound(content: &Value) -> Option<String> {
         .map(ToString::to_string)
         .or_else(|| {
             content
-                .get("route")
-                .and_then(|route| route.get("mode"))
+                .get("mode")
                 .and_then(|mode| mode.get("outbound"))
                 .and_then(Value::as_str)
                 .map(str::trim)

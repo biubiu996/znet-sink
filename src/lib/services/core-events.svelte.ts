@@ -1,10 +1,10 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { startCoreEvents, stopCoreEvents, appendLog, getCoreStats, getCoreRuntime } from '$lib/services/core';
+import { startGuiEvents, stopGuiEvents, appendLog, getCoreStats, getCoreRuntime } from '$lib/services/core';
 import { overviewData } from '$lib/services/overview-data.svelte';
-import type { CoreEventPayload, CoreEventStatus } from '$lib/types/core';
+import type { CoreEventStatus, GuiEventPayload } from '$lib/types/core';
 
-const EVENT_NAME = 'core:event';
-const STATUS_NAME = 'core:event-status';
+const EVENT_NAME = 'gui:event';
+const STATUS_NAME = 'gui:event-status';
 
 class CoreEventsService {
   isSubscribed = $state(false);
@@ -18,7 +18,7 @@ class CoreEventsService {
   async start(events?: string[]) {
     // Listen before starting subscription so we don't miss status events
     if (!this._unlistenEvent) {
-      this._unlistenEvent = await listen<CoreEventPayload>(EVENT_NAME, (event) => {
+      this._unlistenEvent = await listen<GuiEventPayload>(EVENT_NAME, (event) => {
         this._routeEvent(event.payload);
       });
     }
@@ -29,7 +29,7 @@ class CoreEventsService {
     }
 
     try {
-      const sub = await startCoreEvents(events);
+      const sub = await startGuiEvents(events);
       this._activeGeneration = sub.generation;
     } catch (e) {
       this.status = 'error';
@@ -38,7 +38,7 @@ class CoreEventsService {
   }
 
   stop() {
-    stopCoreEvents();
+    stopGuiEvents();
     this._activeGeneration = null;
     this.isSubscribed = false;
     this.status = 'idle';
@@ -83,13 +83,34 @@ class CoreEventsService {
     }
   }
 
-  private _routeEvent(payload: CoreEventPayload) {
+  private _routeEvent(payload: GuiEventPayload) {
     const { generation: _gen, event } = payload;
     if (!event || typeof event !== 'object') return;
+    if (this._activeGeneration !== null && _gen !== this._activeGeneration) return;
 
-    const obj = event as Record<string, unknown>;
+    const eventType = event.eventType;
+    const eventPayload = event.payload;
+    const data = this._eventData(eventPayload);
+    const obj = data && typeof data === 'object'
+      ? data as Record<string, unknown>
+      : { eventType, sourceEventType: event.sourceEventType };
     const type = typeof obj['type'] === 'string' ? obj['type'] : '';
     const subtype = typeof obj['subtype'] === 'string' ? obj['subtype'] : '';
+
+    if (eventType === 'traffic.sampled') {
+      overviewData.applyStatsEvent(obj);
+      return;
+    }
+
+    if (eventType === 'policy.selected' || eventType === 'policy.probeCompleted') {
+      awaitIgnore(overviewData.refreshPolicyNodes());
+      return;
+    }
+
+    if (eventType === 'core.configChanged') {
+      awaitIgnore(this._fetchInitialState());
+      return;
+    }
 
     // Stats events
     if (
@@ -139,6 +160,12 @@ class CoreEventsService {
     return keys.some((k) => k in obj);
   }
 
+  private _eventData(payload: unknown): unknown {
+    if (!payload || typeof payload !== 'object') return payload;
+    const obj = payload as Record<string, unknown>;
+    return 'data' in obj ? obj['data'] : payload;
+  }
+
   private async _fetchInitialState() {
     try {
       const [statsResult, runtimeResult] = await Promise.all([
@@ -151,10 +178,15 @@ class CoreEventsService {
       if (runtimeResult.available && runtimeResult.response) {
         overviewData.applyRuntimeEvent(runtimeResult.response as Record<string, unknown>);
       }
+      await overviewData.refreshPolicyNodes();
     } catch {
       // Best-effort initial fetch
     }
   }
+}
+
+function awaitIgnore(promise: Promise<unknown>) {
+  promise.catch(() => {});
 }
 
 export const coreEvents = new CoreEventsService();

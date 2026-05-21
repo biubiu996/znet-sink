@@ -133,16 +133,15 @@ Rust 会从 zero JSON 中读取：
 
 支持的 GUI 模式：
 
-| 模式 | 语义 | 当前 zero 0.0.3 写入方式 |
+| 模式 | 语义 | 写入方式 |
 | --- | --- | --- |
-| `global` | 全局代理 | `mode = { "type": "global", "outbound": "<globalOutbound>" }` |
-| `rule` | 规则分流 | `mode = { "type": "rule" }`，并保留 `route.rules` 和既有 `route.final` |
-| `direct` | 全部直连 | `mode = { "type": "direct" }` |
+| `global` | 全局代理 | `route.mode = { "type": "global", "outbound": "<globalOutbound>" }` |
+| `rule` | 规则分流 | `route.mode = { "type": "rule" }`，并保留 `route.rules` 和既有 `route.final` |
+| `direct` | 全部直连 | `route.mode = { "type": "direct" }` |
 
 切换模式不删除规则、规则集、策略组或节点。简约模式和专业模式都可以使用该能力；专业模式仍可管理规则等高级配置。
 
-当前打包的 zero 0.0.3 实测支持顶层 `mode` 字段；Rust 读取状态时也兼容旧配置中的 `route.final`。
-当前 zero 0.0.3 仍要求配置中存在 `route`；Rust 写入顶层 `mode` 时会保留或补齐 `route.final`。
+Rust 写入 `route.mode` 时会保留或补齐 `route.final`；读取状态时也兼容旧配置中的顶层 `mode` 和 `route.final`。
 
 ## 能力识别规则
 

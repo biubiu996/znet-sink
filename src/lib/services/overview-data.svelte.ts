@@ -1,4 +1,4 @@
-import { getCoreStats, getCoreRuntime } from '$lib/services/core';
+import { getCorePolicies, getCoreStats, getCoreRuntime } from '$lib/services/core';
 import type { ProxyNode } from '$lib/types/protocol';
 
 const MAX_HISTORY = 45;
@@ -136,6 +136,103 @@ function parseNode(item: unknown, index: number): ProxyNode | null {
   };
 }
 
+function extractPolicyNodes(data: unknown): ProxyNode[] {
+  const groups = valuesFromContainer(data, ['policies', 'policy_groups', 'policyGroups', 'groups', 'items']);
+  const nodes = groups.flatMap((group) => {
+    if (!group || typeof group !== 'object') return [];
+    const obj = group as Record<string, unknown>;
+    const selected = stringFrom(obj, ['selected', 'current', 'now', 'target']);
+    return valuesFromContainer(obj, ['members', 'targets', 'children', 'proxies', 'items'])
+      .map((member, idx) => parsePolicyMember(member, selected, idx))
+      .filter(Boolean) as ProxyNode[];
+  });
+
+  return dedupeNodes(nodes);
+}
+
+function parsePolicyMember(item: unknown, selected: string | null, index: number): ProxyNode | null {
+  if (typeof item === 'string') {
+    return { id: item, name: item, protocol: 'Zero', delay: 0, domain: selected === item ? 'selected' : 'policy' };
+  }
+  if (!item || typeof item !== 'object') return null;
+
+  const obj = item as Record<string, unknown>;
+  const name = stringFrom(obj, ['tag', 'targetTag', 'target_tag', 'name', 'id', 'target']);
+  if (!name) return null;
+
+  const protocol = stringFrom(obj, ['kind', 'type', 'protocol']) ?? 'Zero';
+  const delay = numberFrom(obj, ['delayMs', 'delay_ms', 'latencyMs', 'latency_ms', 'latency']) ?? 0;
+  const alive = boolFrom(obj, ['alive', 'healthy', 'available']);
+  const domain = stringFrom(obj, ['server', 'address', 'host', 'domain'])
+    ?? (selected === name ? 'selected' : alive === false ? 'unavailable' : 'policy');
+
+  return {
+    id: stringFrom(obj, ['id']) ?? `${name}-${index}`,
+    name,
+    protocol,
+    delay,
+    domain,
+  };
+}
+
+function valuesFromContainer(data: unknown, keys: string[]): unknown[] {
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== 'object') return [];
+
+  const obj = data as Record<string, unknown>;
+  for (const key of keys) {
+    const value = obj[key];
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === 'object') return Object.values(value);
+  }
+
+  return [];
+}
+
+function stringFrom(obj: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  }
+  return null;
+}
+
+function numberFrom(obj: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === 'number' && isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (isFinite(parsed)) return parsed;
+    }
+  }
+  return null;
+}
+
+function boolFrom(obj: Record<string, unknown>, keys: string[]): boolean | null {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+      const normalized = value.toLowerCase();
+      if (['true', 'yes', '1'].includes(normalized)) return true;
+      if (['false', 'no', '0'].includes(normalized)) return false;
+    }
+  }
+  return null;
+}
+
+function dedupeNodes(nodes: ProxyNode[]): ProxyNode[] {
+  const seen = new Set<string>();
+  return nodes.filter((node) => {
+    const key = node.name.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 class OverviewDataStore {
   speedHistory = $state<{ up: number; down: number }[]>(Array(MAX_HISTORY).fill(null).map(() => ({ up: 0, down: 0 })));
   proxyNodes = $state<ProxyNode[]>([]);
@@ -165,7 +262,7 @@ class OverviewDataStore {
     if (this._runtimeTimer) { clearInterval(this._runtimeTimer); this._runtimeTimer = null; }
   }
 
-  /** Called by core-events service when a stats event arrives via core:event stream. */
+  /** Called by core-events service when a stats event arrives via gui:event stream. */
   applyStatsEvent(data: Record<string, unknown>) {
     this.isLive = true;
     const up = extractSpeed(data, 'up');
@@ -187,6 +284,19 @@ class OverviewDataStore {
     if (nodes.length > 0) {
       this.proxyNodes = nodes;
     }
+  }
+
+  applyPolicyEvent(data: unknown) {
+    const nodes = extractPolicyNodes(data);
+    if (nodes.length > 0) {
+      this.proxyNodes = nodes;
+    }
+  }
+
+  async refreshPolicyNodes() {
+    const result = await getCorePolicies();
+    if (!result.available || !result.response) return;
+    this.applyPolicyEvent(result.response);
   }
 
   private async _pollStats() {
@@ -226,6 +336,8 @@ class OverviewDataStore {
       const nodes = extractNodes(result.response);
       if (nodes.length > 0) {
         this.proxyNodes = nodes;
+      } else {
+        await this.refreshPolicyNodes();
       }
     } catch {
       // Runtime might not be available yet

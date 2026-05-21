@@ -163,6 +163,14 @@ export async function stopCoreEvents(): Promise<number> {
   return invoke('core_events_stop');
 }
 
+export async function startGuiEvents(events?: string[], options?: CoreIpcOptions): Promise<CoreEventSubscription> {
+  return invoke('gui_events_start', { events, options });
+}
+
+export async function stopGuiEvents(): Promise<number> {
+  return invoke('gui_events_stop');
+}
+
 // ── Core config ──
 
 export async function getCoreConfigSnapshot(): Promise<CoreConfigSnapshot> {

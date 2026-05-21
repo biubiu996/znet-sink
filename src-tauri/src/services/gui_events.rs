@@ -14,8 +14,9 @@ use crate::events::emitter::{
 use crate::models::{
     core::{CoreEndpoint, CoreIpcOptions},
     gui_core::{
-        GuiCoreHealth, GuiEvent, GuiEventData, GuiEventPayload, GuiEventStatus,
-        GuiEventSubscription, GuiPolicySelectedEvent, GuiUnknownEvent, GuiWarningEvent,
+        GuiConfigChangedEvent, GuiCoreHealth, GuiEvent, GuiEventData, GuiEventPayload,
+        GuiEventStatus, GuiEventSubscription, GuiPolicyMember, GuiPolicyProbeCompletedEvent,
+        GuiPolicySelectedEvent, GuiUnknownEvent, GuiWarningEvent,
     },
 };
 use crate::services::control_plane::{endpoint_from_options, timeout_from_options};
@@ -155,6 +156,12 @@ fn normalize_payload(source_event_type: &str, payload: &Value) -> GuiEventData {
             message: zero_adapter::string_at(payload, &["message"])
                 .unwrap_or_else(|| "core warning".to_string()),
         }),
+        "config.changed" => GuiEventData::ConfigChanged(GuiConfigChangedEvent {
+            changed_at_unix_ms: zero_adapter::u64_at(
+                payload,
+                &["changed_at_unix_ms", "changedAtUnixMs"],
+            ),
+        }),
         "flow.started" | "flow.updated" | "flow.completed" => {
             zero_adapter::parse_connection(payload)
                 .map(GuiEventData::Connection)
@@ -163,6 +170,11 @@ fn normalize_payload(source_event_type: &str, payload: &Value) -> GuiEventData {
         "policy.selected" => parse_policy_selected(payload)
             .map(GuiEventData::PolicySelected)
             .unwrap_or_else(|| unknown_payload("invalid policy.selected event payload", payload)),
+        "policy.probe.completed" => parse_policy_probe_completed(payload)
+            .map(GuiEventData::PolicyProbeCompleted)
+            .unwrap_or_else(|| {
+                unknown_payload("invalid policy.probe.completed event payload", payload)
+            }),
         "stats.sampled" => GuiEventData::TrafficStats(zero_adapter::parse_stats(payload)),
         _ => unknown_payload("unsupported zero event type", payload),
     }
@@ -177,6 +189,43 @@ fn parse_policy_selected(payload: &Value) -> Option<GuiPolicySelectedEvent> {
     })
 }
 
+fn parse_policy_probe_completed(payload: &Value) -> Option<GuiPolicyProbeCompletedEvent> {
+    let selected = zero_adapter::string_at(payload, &["selected"]);
+    let members = payload
+        .get("members")
+        .and_then(Value::as_array)
+        .map(|members| {
+            members
+                .iter()
+                .filter_map(|member| parse_policy_probe_member(member, selected.as_deref()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(GuiPolicyProbeCompletedEvent {
+        policy_tag: zero_adapter::string_at(payload, &["policy_tag", "policyTag"])?,
+        selected,
+        members,
+    })
+}
+
+fn parse_policy_probe_member(payload: &Value, selected: Option<&str>) -> Option<GuiPolicyMember> {
+    let tag = zero_adapter::string_at(payload, &["target_tag", "targetTag", "tag", "name"])?;
+    Some(GuiPolicyMember {
+        selected: selected.is_some_and(|selected| selected == tag),
+        tag,
+        kind: zero_adapter::string_at(payload, &["kind", "type", "protocol"]),
+        alive: payload
+            .get("healthy")
+            .and_then(Value::as_bool)
+            .or_else(|| payload.get("alive").and_then(Value::as_bool)),
+        delay_ms: zero_adapter::u64_at(
+            payload,
+            &["latency_ms", "latencyMs", "delay_ms", "delayMs"],
+        ),
+    })
+}
+
 fn unknown_payload(message: &'static str, payload: &Value) -> GuiEventData {
     GuiEventData::Unknown(GuiUnknownEvent {
         message: Some(message.to_string()),
@@ -188,10 +237,12 @@ fn gui_event_type(source_event_type: &str) -> &'static str {
     match source_event_type {
         "engine.started" | "engine.stopped" => "core.statusChanged",
         "engine.warning" => "core.warning",
+        "config.changed" => "core.configChanged",
         "flow.started" => "connection.started",
         "flow.updated" => "connection.updated",
         "flow.completed" => "connection.closed",
         "policy.selected" => "policy.selected",
+        "policy.probe.completed" => "policy.probeCompleted",
         "stats.sampled" => "traffic.sampled",
         _ => "core.unknownEvent",
     }

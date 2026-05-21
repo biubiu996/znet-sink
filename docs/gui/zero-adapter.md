@@ -206,18 +206,18 @@ await invoke('gui_set_proxy_mode', {
 
 转换规则：
 
-| GUI 模式 | 当前 zero 0.0.3 active config |
+| GUI 模式 | Zero active config |
 | --- | --- |
-| `global` | `mode = { "type": "global", "outbound": "<globalOutbound>" }` |
-| `rule` | `mode = { "type": "rule" }`，并保留 `route.rules` 与既有 `route.final` |
-| `direct` | `mode = { "type": "direct" }` |
+| `global` | `route.mode = { "type": "global", "outbound": "<globalOutbound>" }` |
+| `rule` | `route.mode = { "type": "rule" }`，并保留 `route.rules` 与既有 `route.final` |
+| `direct` | `route.mode = { "type": "direct" }` |
 
 注意：
 
 - 切换模式不删除 `route.rules`、策略组或出站节点。
 - `globalOutbound` 未提供时，Rust 会从当前配置中优先推导 `proxy`，再退化到第一个非 `direct` tag。
-- 当前 zero 0.0.3 仍要求配置中存在 `route`；Rust 写入顶层 `mode` 时会保留或补齐 `route.final`。
-- Rust 读取状态时兼容顶层 `mode`、未来可能出现的 `route.mode`，以及旧配置中的 `route.final`。
+- Rust 写入 `route.mode` 时会保留或补齐 `route.final`。
+- Rust 读取状态时优先使用 `route.mode`，并兼容旧配置中的顶层 `mode` 和 `route.final`。
 - `restartCore` 默认是 `true`。如果 Zero 已由 GUI 托管运行，后端会重新导出 active 配置并重启 Zero，使模式切换立即生效。
 - 如果 `restartCore=false` 且 Zero 正在运行，返回 `requiresReconnect=true`，前端应引导用户重连。
 
@@ -525,10 +525,12 @@ await invoke('gui_events_stop');
 | `engine.started` | `core.statusChanged` |
 | `engine.stopped` | `core.statusChanged` |
 | `engine.warning` | `core.warning` |
+| `config.changed` | `core.configChanged` |
 | `flow.started` | `connection.started` |
 | `flow.updated` | `connection.updated` |
 | `flow.completed` | `connection.closed` |
 | `policy.selected` | `policy.selected` |
+| `policy.probe.completed` | `policy.probeCompleted` |
 | `stats.sampled` | `traffic.sampled` |
 
 未知事件会被转换为 `core.unknownEvent`，用于内部日志或诊断，不应直接驱动用户界面。
