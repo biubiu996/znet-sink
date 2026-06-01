@@ -26,6 +26,7 @@ pub struct AppState {
     logs: Mutex<Vec<LogEntry>>,
     traffic_sample: Mutex<Option<TrafficSample>>,
     core_process: Mutex<ManagedCoreProcess>,
+    zero_features_cache: Mutex<Option<ZeroFeaturesCache>>,
 }
 
 #[derive(Clone, Debug)]
@@ -34,10 +35,27 @@ pub(crate) struct TrafficSample {
     pub sampled_at_unix_ms: u64,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ZeroFeaturesCache {
+    pub features: Vec<String>,
+    pub cached_at_unix_ms: u64,
+}
+
 pub(crate) struct ManagedCoreProcess {
     pub child: Option<Child>,
     pub stderr_handle: Option<JoinHandle<()>>,
     pub status: CoreProcessStatus,
+}
+
+impl Drop for ManagedCoreProcess {
+    fn drop(&mut self) {
+        if let Some(ref mut child) = self.child {
+            eprintln!("[ZNet] shutdown: killing core process (pid={})", child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.stderr_handle.take().map(|h| h.join());
+    }
 }
 
 impl Default for AppState {
@@ -72,6 +90,7 @@ impl AppState {
             logs: Mutex::new(logs),
             traffic_sample: Mutex::new(None),
             core_process: Mutex::new(ManagedCoreProcess::default()),
+            zero_features_cache: Mutex::new(None),
         }
     }
 
@@ -121,6 +140,10 @@ impl AppState {
 
     pub(crate) fn core_process(&self) -> &Mutex<ManagedCoreProcess> {
         &self.core_process
+    }
+
+    pub(crate) fn zero_features_cache(&self) -> &Mutex<Option<ZeroFeaturesCache>> {
+        &self.zero_features_cache
     }
 }
 

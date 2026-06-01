@@ -3,6 +3,7 @@ pub mod config;
 pub mod core;
 pub mod errors;
 pub mod events;
+pub mod lifecycle;
 pub mod models;
 pub mod services;
 pub mod state;
@@ -23,45 +24,61 @@ use crate::commands::proxy_mode as proxy_mode_commands;
 use crate::commands::rule_set as rule_set_commands;
 use crate::commands::subscription as subscription_commands;
 use crate::commands::system_proxy as system_proxy_commands;
-use crate::models::app_config::AppConfig;
-use crate::services::domain_store::DomainStoreData;
-use crate::services::{app_config_store, core_process, domain_store, log_store};
+use crate::lifecycle::phases;
+use crate::services::{core_process, system_proxy_guard};
 use crate::state::app_state::AppState;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app_config_path = app_config_store::default_config_path().unwrap_or_else(|e| {
-        eprintln!("warning: failed to resolve app config path: {e:?}, using fallback");
-        std::path::PathBuf::from("app-config.json")
-    });
-    let app_config = app_config_store::load_or_default(&app_config_path).unwrap_or_else(|e| {
-        eprintln!("warning: failed to load app config: {e:?}, using defaults");
-        AppConfig::default()
-    });
-    let domain_data = domain_store::load_all().unwrap_or_else(|e| {
-        eprintln!("warning: failed to load domain data: {e:?}, using empty data");
-        DomainStoreData::default()
-    });
-    let logs = log_store::load_recent(app_config.logs.max_entries).unwrap_or_else(|e| {
-        eprintln!("warning: failed to load logs: {e:?}, using empty log buffer");
-        Vec::new()
-    });
-    if let Err(e) = log_store::rotate(app_config.logs.max_entries) {
-        eprintln!("warning: failed to rotate logs: {e:?}");
-    }
+    // ── Phase 1–2: Guard + Config (runs before Tauri builder) ──
+    let (mut lifecycle, startup_data) = phases::build_builtin();
+    lifecycle.startup().expect("lifecycle startup failed");
 
+    let data = startup_data
+        .lock()
+        .expect("startup data lock")
+        .take()
+        .expect("startup data should be populated by Config phase");
+
+    // ── Phase 3: State — construct AppState from loaded data ──
+    eprintln!("[ZNet] lifecycle: entering phase state");
+    let app_state = AppState::with_domain_data(
+        data.app_config,
+        data.domain_data.proxy_configs,
+        data.domain_data.subscriptions,
+        data.domain_data.rule_sets,
+        data.logs,
+    );
+    eprintln!("[ZNet] lifecycle:   → app_state");
+
+    // Register core-process shutdown guard: stop core on exit.
+    let shutdown_coord = lifecycle.shutdown_coordinator_mut();
+    shutdown_coord.register(
+        lifecycle::Phase::Runtime,
+        "stop_core_process",
+        Box::new(|| {
+            // ManagedCoreProcess::Drop kills + waits on the child process.
+            // This guard runs first so logs appear in correct order.
+            eprintln!("[ZNet] shutdown: stopping core process (via Drop)");
+        }),
+    );
+    shutdown_coord.register(
+        lifecycle::Phase::Guard,
+        "system_proxy_cleanup",
+        Box::new(move || {
+            // Ensure system proxy is disabled on clean exit
+            system_proxy_guard::disable_with_guard().ok();
+        }),
+    );
+
+    // ── Phase 4–5: Register + Runtime (inside Tauri builder) ──
     tauri::Builder::default()
-        .manage(AppState::with_domain_data(
-            app_config,
-            domain_data.proxy_configs,
-            domain_data.subscriptions,
-            domain_data.rule_sets,
-            logs,
-        ))
+        .manage(app_state)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // ── Phase 4: Register commands ──
         .invoke_handler(tauri::generate_handler![
             core_commands::core_ipc_default_endpoint,
             core_commands::core_status,
@@ -135,11 +152,10 @@ pub fn run() {
             system_proxy_commands::system_proxy_status,
             kernel_version_commands::kernel_list_versions,
             kernel_version_commands::kernel_install_version,
-            kernel_version_commands::kernel_detect_version
+            kernel_version_commands::kernel_detect_version,
         ])
+        // ── Phase 5: Runtime — tray, auto-start, window ──
         .setup(|app| {
-            // 创建系统托盘菜单
-            let tray_id = "main-tray";
             let auto_start = app
                 .state::<AppState>()
                 .app_config()
@@ -154,24 +170,18 @@ pub fn run() {
                 });
             }
 
-            // 菜单项
-            let show_item = tauri::menu::MenuItemBuilder::new("显示")
-                .id("show")
-                .build(app)?;
-            let quit_item = tauri::menu::MenuItemBuilder::new("退出")
-                .id("quit")
-                .build(app)?;
+            // System tray
+            let show_item =
+                tauri::menu::MenuItemBuilder::new("显示").id("show").build(app)?;
+            let quit_item =
+                tauri::menu::MenuItemBuilder::new("退出").id("quit").build(app)?;
 
             let tray_menu = tauri::menu::Menu::with_items(
                 app,
-                &[
-                    &show_item,
-                    &tauri::menu::PredefinedMenuItem::separator(app)?,
-                    &quit_item,
-                ],
+                &[&show_item, &tauri::menu::PredefinedMenuItem::separator(app)?, &quit_item],
             )?;
 
-            let _tray_menu = TrayIconBuilder::with_id(tray_id)
+            let _tray_menu = TrayIconBuilder::with_id("main-tray")
                 .tooltip("ZNet Sink")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&tray_menu)
@@ -188,14 +198,8 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button,
-                        button_state,
-                        ..
-                    } = event
-                    {
+                    if let TrayIconEvent::Click { button, button_state, .. } = event {
                         if button == MouseButton::Left && button_state == MouseButtonState::Up {
-                            // 左键点击：显示/隐藏窗口
                             if let Some(window) = tray.app_handle().get_webview_window("main") {
                                 if window.is_visible().unwrap_or(false) {
                                     let _ = window.hide();
@@ -213,7 +217,6 @@ pub fn run() {
         })
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                // 阻止窗口关闭，改为隐藏（最小化到托盘）
                 api.prevent_close();
                 let _ = window.hide();
             }
@@ -221,4 +224,7 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+
+    // ── Shutdown: runs after Tauri event loop exits ──
+    lifecycle.shutdown();
 }

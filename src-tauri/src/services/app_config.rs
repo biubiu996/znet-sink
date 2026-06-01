@@ -16,6 +16,7 @@ pub fn get(state: State<'_, AppState>) -> AppResult<AppConfig> {
 }
 
 pub fn update(state: State<'_, AppState>, patch: AppConfigPatch) -> AppResult<AppConfig> {
+    let start = std::time::Instant::now();
     let mut config = lock(state.app_config(), "app_config")?;
 
     if let Some(core) = patch.core {
@@ -129,6 +130,11 @@ pub fn update(state: State<'_, AppState>, patch: AppConfigPatch) -> AppResult<Ap
     }
 
     app_config_store::save(&app_config_store::default_config_path()?, &config)?;
+
+    eprintln!(
+        "[ZNet] app_config_update: took {:?}",
+        start.elapsed(),
+    );
 
     Ok(config.clone())
 }

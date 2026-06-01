@@ -6,7 +6,7 @@ use crate::models::{
     core_process::CoreProcessState,
     gui_core::{GuiConnectionStatus, GuiCoreHealth},
 };
-use crate::services::{common::lock, core_config, core_process, system_proxy, zero_adapter};
+use crate::services::{common::lock, core_config, core_process, system_proxy, system_proxy_guard, zero_adapter};
 use crate::state::app_state::AppState;
 
 const HEALTH_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -44,7 +44,7 @@ pub async fn connect(
     }
 
     let (host, port) = local_proxy_endpoint(state.inner())?;
-    system_proxy::enable(&host, port)?;
+    system_proxy_guard::enable_with_guard(&host, port)?;
 
     build_status(state.inner(), "connected", None)
         .await
@@ -55,7 +55,7 @@ pub async fn connect(
 }
 
 pub async fn disconnect(state: State<'_, AppState>) -> AppResult<GuiConnectionStatus> {
-    let proxy_result = system_proxy::disable();
+    let proxy_result = system_proxy_guard::disable_with_guard();
     let stop_result = core_process::stop(state.clone());
 
     let error = proxy_result

@@ -19,6 +19,7 @@ pub mod proxy_mode;
 pub mod rule_set;
 pub mod subscription;
 pub mod system_proxy;
+pub mod system_proxy_guard;
 pub mod zero_adapter;
 
 #[cfg(test)]
