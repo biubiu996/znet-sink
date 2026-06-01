@@ -31,6 +31,9 @@ pub struct CoreKernelInfo {
     pub modified_at_unix_ms: Option<u64>,
     pub recommended_install_dir: Option<String>,
     pub download_url: Option<String>,
+    /// Whether an active proxy config exists (checked at call time).
+    /// Used by the frontend to gate the "Start Kernel" button.
+    pub has_active_config: bool,
     pub warnings: Vec<String>,
 }
 
@@ -52,6 +55,11 @@ pub struct CoreDownloadResult {
 }
 
 impl CoreConfigSnapshot {
+    /// Only checks user-actionable preconditions: the executable binary must exist.
+    /// Config file and working directory are auto-managed by the system
+    /// (export_active, resolve_working_dir) — they are not blocking constraints.
+    /// The "no active proxy config" guard lives in the self-test check
+    /// (`check_active_proxy_config`), not here.
     pub fn validate_launchable(&self) -> Result<(), String> {
         let executable_path = self
             .executable_path
@@ -60,20 +68,6 @@ impl CoreConfigSnapshot {
         if !self.executable_exists {
             return Err(format!("core executable does not exist: {executable_path}"));
         }
-        if let Some(false) = self.working_dir_exists {
-            return Err(format!(
-                "core working directory does not exist: {}",
-                self.working_dir.as_deref().unwrap_or_default()
-            ));
-        }
-        let config_path = self
-            .config_path
-            .as_deref()
-            .ok_or_else(|| "core config file is not configured".to_string())?;
-        if !self.config_exists.unwrap_or(false) {
-            return Err(format!("core config file does not exist: {config_path}"));
-        }
-
         Ok(())
     }
 }

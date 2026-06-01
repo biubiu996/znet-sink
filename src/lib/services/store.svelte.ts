@@ -113,42 +113,58 @@ class AppStateStore {
 
   async switchUIMode(mode: UIMode) {
     const previousMode = this.uiMode;
+    console.time('[ZNet] switchUIMode');
+
+    // Optimistic update — UI responds instantly
+    this.uiMode = mode;
+    if (browser) {
+      localStorage.setItem('znet-ui-mode', mode);
+    }
+
     try {
-      await this.persistUiMode(mode);
-      await this.refreshInteractionSurface();
+      // Both operations are independent — run in parallel
+      await Promise.all([
+        this.persistUiMode(mode),
+        this.refreshInteractionSurface(),
+      ]);
 
-      this.uiMode = mode;
-      if (browser) {
-        localStorage.setItem('znet-ui-mode', mode);
-      }
-
+      // If current tab is no longer visible after surface refresh, navigate away
       const navItem = this.interactionSurface.navigation.get(this.activeTab);
       if (!navItem?.visible) {
         this.activeTab = 'overview';
       }
+
+      console.timeEnd('[ZNet] switchUIMode');
     } catch (e) {
-      console.error('Mode switch failed:', e);
+      console.error('[ZNet] switchUIMode failed:', e);
+      console.timeEnd('[ZNet] switchUIMode');
+      // Revert optimistic update on failure
       this.uiMode = previousMode;
-      throw e;
+      if (browser) {
+        localStorage.setItem('znet-ui-mode', previousMode);
+      }
     }
   }
 
   async refreshInteractionSurface() {
     try {
+      console.time('[ZNet] refreshInteractionSurface');
       const surface = await getGuiInteractionSurfaceSnapshot();
       this.interactionSurface = {
         navigation: new Map(surface.navigation.map(item => [item.key, item])),
         actions: new Map(surface.actions.map(item => [item.key, item])),
         features: new Map(surface.features.map(item => [item.key, item])),
       };
-    } catch {
-      // Backend may not be available
+      console.timeEnd('[ZNet] refreshInteractionSurface');
+    } catch (e) {
+      console.warn('[ZNet] refreshInteractionSurface failed:', e);
     }
   }
 
   private getFallbackNavVisible(key: string): boolean {
     // 后端不可用时，简约模式默认可见的导航
-    const liteModeNav = ['overview', 'nodes', 'profiles', 'subscriptions', 'settings'];
+    // nodes 由 Rust interaction_surface 根据活跃配置动态控制，不在此硬编码
+    const liteModeNav = ['overview', 'profiles', 'subscriptions', 'settings'];
     return liteModeNav.includes(key);
   }
 
@@ -179,8 +195,8 @@ class AppStateStore {
   private async persistUiMode(mode: UIMode) {
     try {
       await updateAppConfig({ ui: { uiMode: mode } });
-    } catch {
-      // Backend may not be available
+    } catch (e) {
+      console.warn('[ZNet] persistUiMode failed:', e);
     }
   }
 

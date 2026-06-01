@@ -30,7 +30,7 @@ fn default_zero_core_config_requires_explicit_executable() {
 
 #[test]
 fn core_inspection_exposes_read_only_public_info() {
-    let info = inspect_from_config(&AppCoreConfig::default()).unwrap();
+    let info = inspect_from_config(&AppCoreConfig::default(), false).unwrap();
 
     assert_eq!(info.kernel, "zero");
     assert!(!info.executable_exists);

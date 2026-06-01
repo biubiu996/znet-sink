@@ -7,9 +7,12 @@ use crate::models::{
     },
     proxy_config::ProxyConfigCapabilities,
 };
-use crate::services::common::lock;
+use crate::services::common::{self, lock};
 use crate::services::interaction_mode;
 use crate::state::app_state::AppState;
+
+/// How long to keep zero_features cached before re-querying the core.
+const ZERO_FEATURES_CACHE_TTL_MS: u64 = 30_000;
 
 pub fn snapshot(state: State<'_, AppState>) -> AppResult<GuiCapabilitySnapshot> {
     let profiles = lock(state.proxy_configs(), "proxy_config")?;
@@ -39,22 +42,84 @@ pub fn snapshot(state: State<'_, AppState>) -> AppResult<GuiCapabilitySnapshot> 
 pub async fn interaction_surface(
     state: State<'_, AppState>,
 ) -> AppResult<InteractionSurfaceSnapshot> {
+    let start = std::time::Instant::now();
+
     let ui_mode = interaction_mode::current_ui_mode(state.inner())?;
     let is_pro = interaction_mode::is_pro_mode(&ui_mode);
-    let zero_features = crate::services::zero_adapter::capability_feature_keys(state.inner())
-        .await
-        .unwrap_or_default();
+    let zero_features = cached_or_query_zero_features(state.inner()).await;
     let hidden_menu_keys = lock(state.app_config(), "app_config")?
         .ui
         .hidden_menu_keys
         .clone();
+    let has_active_config = lock(state.proxy_configs(), "proxy_config")?
+        .iter()
+        .any(|p| p.active);
+
+    eprintln!(
+        "[ZNet] interaction_surface: mode={ui_mode}, {} features, took {:?}",
+        zero_features.len(),
+        start.elapsed(),
+    );
 
     Ok(InteractionSurfaceSnapshot {
         ui_mode,
-        navigation: navigation_items(is_pro, &hidden_menu_keys),
+        navigation: navigation_items(is_pro, &hidden_menu_keys, has_active_config),
         actions: action_items(is_pro, &zero_features),
         features: feature_surface_items(is_pro, &zero_features),
     })
+}
+
+/// Return cached zero_features if fresh enough, otherwise query the core and update the cache.
+///
+/// Skips the core IPC entirely when the core process is not running.
+async fn cached_or_query_zero_features(state: &AppState) -> Vec<String> {
+    let now = common::now_unix_ms();
+
+    // Check cache
+    if let Ok(cache) = lock(state.zero_features_cache(), "zero_features_cache") {
+        if let Some(ref cached) = *cache {
+            if now.saturating_sub(cached.cached_at_unix_ms) < ZERO_FEATURES_CACHE_TTL_MS {
+                return cached.features.clone();
+            }
+        }
+    }
+
+    // Skip IPC entirely if core is not running — avoids the 5s named-pipe timeout
+    let core_running = crate::services::core_process::refresh_status(state)
+        .map(|s| s.state == crate::models::core_process::CoreProcessState::Running)
+        .unwrap_or(false);
+
+    if !core_running {
+        eprintln!("[ZNet] zero_features: core not running, skipping IPC query");
+        // Return cached features even if expired, or empty if never queried
+        if let Ok(cache) = lock(state.zero_features_cache(), "zero_features_cache") {
+            if let Some(ref cached) = *cache {
+                return cached.features.clone();
+            }
+        }
+        return Vec::new();
+    }
+
+    // Cache miss + core running — query core
+    let query_start = std::time::Instant::now();
+    let features = crate::services::zero_adapter::capability_feature_keys(state)
+        .await
+        .unwrap_or_default();
+    eprintln!(
+        "[ZNet] zero_features cache miss: core query took {:?}, got {} features",
+        query_start.elapsed(),
+        features.len(),
+    );
+
+    // Update cache
+    if let Ok(mut cache) = lock(state.zero_features_cache(), "zero_features_cache") {
+        *cache = Some(crate::state::app_state::ZeroFeaturesCache {
+            features: features.clone(),
+            cached_at_unix_ms: now,
+        });
+    }
+
+    features
 }
 
 fn proxy_feature_items(
@@ -105,9 +170,16 @@ fn feature(key: &str, enabled: bool, missing_active_reason: &Option<String>) -> 
     }
 }
 
-fn navigation_items(is_pro: bool, hidden_menu_keys: &[String]) -> Vec<InteractionSurfaceItem> {
+fn navigation_items(
+    is_pro: bool,
+    hidden_menu_keys: &[String],
+    has_active_config: bool,
+) -> Vec<InteractionSurfaceItem> {
     let mut items = vec![
         shared("overview", "navigation"),
+        // 节点菜单：有活跃配置文件时才可见。Profiles（配置）选项卡在 Lite 和 Pro 模式均可访问，
+        // 用于选择/激活配置 → 激活后节点菜单自动显示。
+        has_config("nodes", "navigation", has_active_config),
         pro_only("profiles", "navigation", is_pro),
         shared("subscriptions", "navigation"),
         pro_only("rules", "navigation", is_pro),
@@ -285,6 +357,17 @@ fn pro_only(key: &str, category: &str, is_pro: bool) -> InteractionSurfaceItem {
         operable: is_pro,
         readonly: false,
         reason: (!is_pro).then(|| "hidden in lite mode".to_string()),
+    }
+}
+
+fn has_config(key: &str, category: &str, active: bool) -> InteractionSurfaceItem {
+    InteractionSurfaceItem {
+        key: key.to_string(),
+        category: category.to_string(),
+        visible: active,
+        operable: active,
+        readonly: false,
+        reason: (!active).then(|| "no active proxy config".to_string()),
     }
 }
 

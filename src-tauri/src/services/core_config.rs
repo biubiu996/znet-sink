@@ -28,7 +28,10 @@ pub fn snapshot(state: State<'_, AppState>) -> AppResult<CoreConfigSnapshot> {
 
 pub fn inspect(state: State<'_, AppState>) -> AppResult<CoreKernelInfo> {
     let config = lock(state.app_config(), "app_config")?.core.clone();
-    inspect_from_config(&config)
+    let has_active_config = lock(state.proxy_configs(), "proxy_config")?
+        .iter()
+        .any(|p| p.active);
+    inspect_from_config(&config, has_active_config)
 }
 
 pub fn export_active(state: State<'_, AppState>) -> AppResult<CoreConfigExportResult> {
@@ -80,21 +83,14 @@ pub fn snapshot_from_config(config: &AppCoreConfig) -> AppResult<CoreConfigSnaps
     let launch_args = launch_args(config_path.as_deref(), socket.as_deref());
 
     let mut warnings = Vec::new();
+    // 仅可执行文件是用户必须配置的——其余（config 文件、工作目录）由系统自动管理
     if executable_path.is_none() {
         warnings.push("core executable path is not configured".to_string());
     } else if !executable_exists {
         warnings.push("core executable does not exist".to_string());
     }
-    if config_path.is_none() {
-        warnings.push("core config file is not configured".to_string());
-    } else if !config_path.as_deref().unwrap().is_file() {
-        warnings.push("core config file does not exist".to_string());
-    }
-    if let Some(path) = working_dir.as_deref() {
-        if !path.is_dir() {
-            warnings.push("core working directory does not exist".to_string());
-        }
-    }
+    // config_path / working_dir 由 export_active() / resolve_working_dir() 自动生成，
+    // 不作为用户可见的警告。自检中的 check_active_proxy_config 独立守卫"无活跃配置"场景。
 
     Ok(CoreConfigSnapshot {
         kernel: config.kernel.clone(),
@@ -113,7 +109,7 @@ pub fn snapshot_from_config(config: &AppCoreConfig) -> AppResult<CoreConfigSnaps
     })
 }
 
-pub fn inspect_from_config(config: &AppCoreConfig) -> AppResult<CoreKernelInfo> {
+pub fn inspect_from_config(config: &AppCoreConfig, has_active_config: bool) -> AppResult<CoreKernelInfo> {
     let executable_path = resolve_executable_path(config);
     let executable_exists = executable_path.as_ref().is_some_and(|path| path.is_file());
     let metadata = executable_path
@@ -149,6 +145,7 @@ pub fn inspect_from_config(config: &AppCoreConfig) -> AppResult<CoreKernelInfo> 
             .clone()
             .filter(|url| !url.trim().is_empty())
             .or_else(|| Some(DEFAULT_CORE_DOWNLOAD_URL.to_string())),
+        has_active_config,
         warnings,
     })
 }
@@ -264,7 +261,8 @@ fn system_time_to_unix_ms(time: SystemTime) -> Option<u64> {
 }
 
 fn recommended_install_dir() -> Option<String> {
-    std::env::current_dir()
+    // 使用 app data dir + /core，与 kernel_manager::resolve_install_dir 默认路径一致
+    app_data_dir()
         .ok()
         .map(|dir| dir.join("core"))
         .map(|path| path_to_string(&path))
