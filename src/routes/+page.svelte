@@ -56,6 +56,15 @@
       <div class="flex-1 flex items-center justify-center">
         <span style="font-size: 13px; color: var(--muted-foreground); opacity: 0.5;">加载中…</span>
       </div>
+    {:else if store.loadError}
+      <div class="flex-1 flex flex-col items-center justify-center gap-3">
+        <span style="font-size: 14px; color: var(--destructive); font-weight: 600;">启动失败</span>
+        <span style="font-size: 12px; color: var(--muted-foreground); max-width: 360px; text-align: center;">{store.loadError}</span>
+        <button
+          class="retry-btn"
+          onclick={() => { store.loadError = null; store.appLoading = true; store.loadFromBackend(); }}
+        >重试</button>
+      </div>
     {:else if !store.isInitialized}
       <WelcomeGuide />
     {:else}

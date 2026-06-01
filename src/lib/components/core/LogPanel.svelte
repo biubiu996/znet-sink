@@ -56,18 +56,32 @@
   }
 
   let _lastLogTick = -1;
+  let logBodyEl: HTMLDivElement | undefined = $state();
 
-  // 挂载时初始加载 + 内核日志事件驱动刷新
+  function scrollLogToBottom() {
+    if (!logBodyEl || !autoScroll) return;
+    logBodyEl.scrollTop = logBodyEl.scrollHeight;
+  }
+
+  // 挂载时初始加载
   $effect(() => {
     refreshLogs();
   });
 
+  // 内核日志事件驱动刷新
   $effect(() => {
     const tick = coreEvents.logTick;
     if (tick > 0 && tick !== _lastLogTick) {
       _lastLogTick = tick;
       refreshLogs();
     }
+  });
+
+  // 日志更新后自动滚动
+  $effect(() => {
+    // 读取 filteredLogs 作为依赖
+    void filteredLogs.length;
+    scrollLogToBottom();
   });
 </script>
 
@@ -148,7 +162,7 @@
   </div>
 
   <!-- Log body: terminal-style -->
-  <div class="log-body">
+  <div class="log-body" bind:this={logBodyEl}>
     {#if filteredLogs.length === 0}
       <div class="log-empty">暂无日志</div>
     {:else}

@@ -9,6 +9,7 @@ export type SettingsSection = 'general' | 'core' | 'about';
 class AppStateStore {
   isInitialized = $state(false);
   appLoading = $state(true);
+  loadError = $state<string | null>(null);
   uiMode = $state<UIMode>('lite');
   activeTab = $state('overview');
   settingsSection = $state<SettingsSection>('general');
@@ -73,8 +74,8 @@ class AppStateStore {
       } else {
         this.isInitialized = true;
       }
-    } catch {
-      // Backend unavailable — WelcomeGuide will handle onboarding
+    } catch (e) {
+      this.loadError = `后端加载失败: ${e instanceof Error ? e.message : String(e)}`;
     } finally {
       this.appLoading = false;
     }

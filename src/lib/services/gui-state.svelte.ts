@@ -6,17 +6,15 @@ import {
   getGuiProxyModeStatus,
   guiSetProxyMode,
   getGuiCoreOverview,
-  getGuiTrafficStats,
   getGuiPolicyGroups,
 } from './core';
-import type { 
-  SelfTestSnapshot, 
-  ConnectionStatus, 
-  ProxyModeStatus, 
-  CoreOverview, 
-  TrafficStats, 
+import type {
+  SelfTestSnapshot,
+  ConnectionStatus,
+  ProxyModeStatus,
+  CoreOverview,
   PolicyGroup,
-  ProxyMode 
+  ProxyMode
 } from '$lib/types/gui-api';
 
 class GuiStateStore {
@@ -24,7 +22,6 @@ class GuiStateStore {
   connection = $state<ConnectionStatus | null>(null);
   proxyMode = $state<ProxyModeStatus | null>(null);
   coreOverview = $state<CoreOverview | null>(null);
-  trafficStats = $state<TrafficStats | null>(null);
   policyGroups = $state<PolicyGroup[]>([]);
   
   isLoading = $state(false);
@@ -48,7 +45,6 @@ class GuiStateStore {
         this.refreshConnectionStatus(),
         this.refreshProxyMode(),
         this.refreshCoreOverview(),
-        this.refreshTrafficStats(),
         this.refreshPolicyGroups(),
       ]);
     } catch {
@@ -85,14 +81,6 @@ class GuiStateStore {
       this.coreOverview = await getGuiCoreOverview();
     } catch {
       this.coreOverview = null;
-    }
-  }
-
-  async refreshTrafficStats() {
-    try {
-      this.trafficStats = await getGuiTrafficStats();
-    } catch {
-      this.trafficStats = null;
     }
   }
 

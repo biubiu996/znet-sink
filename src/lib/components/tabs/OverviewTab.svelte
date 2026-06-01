@@ -7,17 +7,6 @@
   import LogPanel from '$lib/components/core/LogPanel.svelte';
   import { Badge } from '$lib/components/ui/badge';
 
-  function formatSpeed(bytesPerSec: number): string {
-    if (!bytesPerSec || bytesPerSec < 0) return '0 B/s';
-    if (bytesPerSec >= 1024 * 1024) {
-      return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
-    }
-    if (bytesPerSec >= 1024) {
-      return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
-    }
-    return `${bytesPerSec} B/s`;
-  }
-
   function formatUptime(ms?: number): string {
     if (!ms) return '-';
     const seconds = Math.floor(ms / 1000);
@@ -169,28 +158,7 @@
       {/if}
     </div>
 
-    <!-- Row 3: Traffic stats -->
-    {#if store.isFeatureVisible('trafficStats')}
-      <div class="overview-card flex-shrink-0">
-        <div class="flex items-center justify-between mb-2">
-          <span class="card-label">实时流量</span>
-        </div>
-        {#if guiState.trafficStats}
-          <div class="grid grid-cols-2 gap-2">
-            <div class="traffic-metric down">
-              <span class="traffic-value">{formatSpeed(guiState.trafficStats.downloadBytesPerSec)}</span>
-              <span class="traffic-label">下行速率</span>
-            </div>
-            <div class="traffic-metric up">
-              <span class="traffic-value">{formatSpeed(guiState.trafficStats.uploadBytesPerSec)}</span>
-              <span class="traffic-label">上行速率</span>
-            </div>
-          </div>
-        {/if}
-      </div>
-    {/if}
-
-    <!-- Row 4: Chart + Current node -->
+    <!-- Row 3: Chart + Current node (traffic speeds inline in TrafficChart header) -->
     {#if store.isFeatureVisible('policySelection')}
       <div class="flex-1 w-full flex flex-col lg:flex-row gap-3 overflow-hidden min-h-0" style="min-height: 180px;">
         <div class="w-full lg:w-2/3 overflow-hidden min-h-[120px]">
@@ -586,37 +554,6 @@
   }
 
   /* ---- Traffic metrics ---- */
-  .traffic-metric {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
-    border-radius: 7px;
-  }
-
-  .traffic-metric.down {
-    background: rgba(59, 130, 246, 0.06);
-    border: 1px solid rgba(59, 130, 246, 0.1);
-  }
-
-  .traffic-metric.up {
-    background: rgba(34, 197, 94, 0.06);
-    border: 1px solid rgba(34, 197, 94, 0.1);
-  }
-
-  .traffic-value {
-    font-size: 14px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    font-family: var(--font-mono, monospace);
-  }
-
-  .traffic-metric.down .traffic-value { color: #3B82F6; }
-  .traffic-metric.up  .traffic-value { color: #22C55E; }
-
-  :global(.dark) .traffic-metric.down .traffic-value { color: #60A5FA; }
-  :global(.dark) .traffic-metric.up  .traffic-value { color: #4ADE80; }
-
   /* ---- Expand chevron ---- */
   .expand-chevron {
     transition: transform 0.2s ease;
@@ -697,9 +634,4 @@
     font-family: var(--font-mono);
   }
 
-  .traffic-label {
-    font-size: 11px;
-    color: var(--muted-foreground);
-    margin-left: auto;
-  }
 </style>

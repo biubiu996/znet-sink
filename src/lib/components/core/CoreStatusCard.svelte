@@ -124,7 +124,7 @@
   async function tryRestartCore() {
     if (retryCount >= MAX_AUTO_RETRY) {
       toastError(`内核连续崩溃 ${MAX_AUTO_RETRY} 次，已停止自动重试`);
-      retryCount = 0; return;
+      retryCount = 0; retryTimer = null; return;
     }
     retryCount++;
     info(`内核崩溃，自动重试 (${retryCount}/${MAX_AUTO_RETRY})…`);
