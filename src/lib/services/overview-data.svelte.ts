@@ -2,80 +2,9 @@ import { getCorePolicies } from '$lib/services/core';
 import type { ProxyNode } from '$lib/types/protocol';
 
 const MAX_HISTORY = 300; // 5 minutes at 1-second sampling
+const MIN_RATE_INTERVAL_MS = 500; // minimum interval for stable speed calculation
 
-function extractSpeed(data: unknown, direction: 'up' | 'down'): number {
-  if (!data || typeof data !== 'object') return 0;
-
-  const upKeys = [
-    'uploadSpeed', 'upload_speed', 'uploadSpeedBps', 'upstreamBps',
-    'outboundSpeed', 'outbound_speed', 'tx', 'txSpeed',
-    'up', 'upload', 'outbound',
-  ];
-  const downKeys = [
-    'downloadSpeed', 'download_speed', 'downloadSpeedBps', 'downstreamBps',
-    'inboundSpeed', 'inbound_speed', 'rx', 'rxSpeed',
-    'down', 'download', 'inbound',
-  ];
-  const keys = direction === 'up' ? upKeys : downKeys;
-
-  for (const key of keys) {
-    const val = (data as Record<string, unknown>)[key];
-    if (typeof val === 'number' && isFinite(val)) {
-      return key.endsWith('Bps') || key === direction || key === 'up' || key === 'down'
-        ? val / 1_000_000 // bytes/sec → MB/s
-        : val;
-    }
-  }
-
-  // Try nested stats object
-  const stats = (data as Record<string, unknown>)['stats'] || (data as Record<string, unknown>)['data'];
-  if (stats && typeof stats === 'object') {
-    return extractSpeed(stats, direction);
-  }
-
-  return 0;
-}
-
-function extractTotalBytes(data: unknown, direction: 'up' | 'down'): number {
-  if (!data || typeof data !== 'object') return 0;
-
-  const upKeys = [
-    'totalUploadBytes', 'uploadTotal', 'totalUpload', 'totalUp',
-    'uploadBytes', 'txBytes', 'totalTx', 'outboundTotal',
-    'totalOutbound', 'txTotal',
-  ];
-  const downKeys = [
-    'totalDownloadBytes', 'downloadTotal', 'totalDownload', 'totalDown',
-    'downloadBytes', 'rxBytes', 'totalRx', 'inboundTotal',
-    'totalInbound', 'rxTotal',
-  ];
-  const keys = direction === 'up' ? upKeys : downKeys;
-
-  for (const key of keys) {
-    const val = (data as Record<string, unknown>)[key];
-    if (typeof val === 'number' && isFinite(val) && val >= 0) return val;
-  }
-
-  // Try nested stats/traffic object
-  const nested = (data as Record<string, unknown>)['stats']
-    || (data as Record<string, unknown>)['data']
-    || (data as Record<string, unknown>)['traffic'];
-  if (nested && typeof nested === 'object') {
-    return extractTotalBytes(nested, direction);
-  }
-
-  return 0;
-}
-
-function extractConnections(data: unknown): number {
-  if (!data || typeof data !== 'object') return 0;
-  const keys = ['connections', 'connectionCount', 'activeConnections', 'sessions', 'activeFlows'];
-  for (const key of keys) {
-    const val = (data as Record<string, unknown>)[key];
-    if (typeof val === 'number' && isFinite(val)) return val;
-  }
-  return 0;
-}
+// ── Runtime / policy node extraction (varied data shapes from core IPC) ──
 
 function extractNodes(data: unknown): ProxyNode[] {
   if (!data || typeof data !== 'object') return [];
@@ -88,7 +17,6 @@ function extractNodes(data: unknown): ProxyNode[] {
     if (Array.isArray(arr)) candidates.push(...arr);
   }
 
-  // Also check nested objects
   for (const key of ['proxy', 'inbounds', 'config']) {
     const sub = obj[key];
     if (sub && typeof sub === 'object' && !Array.isArray(sub)) {
@@ -231,35 +159,112 @@ function dedupeNodes(nodes: ProxyNode[]): ProxyNode[] {
   });
 }
 
+// ── Compact fallback: extract a number from raw data using known key variations ──
+
+function pickNumber(data: Record<string, unknown>, keys: string[]): number {
+  for (const key of keys) {
+    const val = data[key];
+    if (typeof val === 'number' && isFinite(val)) return val;
+  }
+  return 0;
+}
+
+function pickNumberRecursive(data: Record<string, unknown>, keys: string[]): number {
+  for (const key of keys) {
+    const val = data[key];
+    if (typeof val === 'number' && isFinite(val)) return val;
+  }
+
+  // Try one level of nesting (raw IPC often wraps in `{ stats: {...} }` or `{ data: {...} }`)
+  for (const wrapper of ['stats', 'data', 'traffic', 'result']) {
+    const nested = data[wrapper];
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      for (const key of keys) {
+        const val = (nested as Record<string, unknown>)[key];
+        if (typeof val === 'number' && isFinite(val)) return val;
+      }
+    }
+  }
+
+  return 0;
+}
+
+// ── Store ──
+
 class OverviewDataStore {
-  speedHistory = $state<{ up: number; down: number }[]>(Array(MAX_HISTORY).fill(null).map(() => ({ up: 0, down: 0 })));
+  speedHistory = $state<{ up: number; down: number }[]>(
+    Array.from({ length: MAX_HISTORY }, () => ({ up: 0, down: 0 })),
+  );
   proxyNodes = $state<ProxyNode[]>([]);
   activeConnections = $state(0);
   isLive = $state(false);
   totalUpBytes = $state(0);
   totalDownBytes = $state(0);
 
-  // Derived: human-readable cumulative totals in MB
+  // Speed calculation baseline (delta-based, matching Rust build_traffic_snapshot)
+  private _lastBytesUp = 0;
+  private _lastBytesDown = 0;
+  private _lastSampleAt = 0;
+
   get totalUpMB() { return this.totalUpBytes / 1_000_000; }
   get totalDownMB() { return this.totalDownBytes / 1_000_000; }
 
-  /** Called by core-events service when a stats event arrives via gui:event stream. */
+  /**
+   * Apply a stats event.
+   *
+   * Two data paths:
+   * 1. Typed (traffic.sampled event → GuiTrafficStats): { bytesUp, bytesDown, activeSessions, ... }
+   * 2. Raw (getCoreStats IPC or legacy events): unknown shape, fallback key matching
+   */
   applyStatsEvent(data: Record<string, unknown>) {
     this.isLive = true;
-    const up = extractSpeed(data, 'up');
-    const down = extractSpeed(data, 'down');
 
-    this.speedHistory.push({ up, down });
+    // Primary keys (GuiTrafficStats from event stream)
+    const bytesUp = pickNumber(data, ['bytesUp', 'bytes_up', 'upload', 'tx']);
+    const bytesDown = pickNumber(data, ['bytesDown', 'bytes_down', 'download', 'rx']);
+    const sessions = pickNumber(data, ['activeSessions', 'active_sessions', 'activeConnections', 'connectionCount']);
+
+    // Fallback keys (raw IPC often nests inside { stats: {...} })
+    const totalUp = bytesUp || pickNumberRecursive(data, [
+      'totalUploadBytes', 'uploadTotal', 'totalUp', 'totalUpload',
+      'uploadBytes', 'txBytes', 'totalTx', 'bytes_up', 'bytesUp',
+    ]);
+    const totalDown = bytesDown || pickNumberRecursive(data, [
+      'totalDownloadBytes', 'downloadTotal', 'totalDown', 'totalDownload',
+      'downloadBytes', 'rxBytes', 'totalRx', 'bytes_down', 'bytesDown',
+    ]);
+    const connections = sessions || pickNumberRecursive(data, [
+      'activeSessions', 'active_sessions', 'activeConnections', 'connections',
+      'sessionCount', 'connectionCount', 'sessions', 'activeFlows',
+    ]);
+
+    // Delta-based speed (MB/s)
+    const now = Date.now();
+    let upRate = 0;
+    let downRate = 0;
+
+    if (this._lastSampleAt > 0) {
+      const intervalMs = now - this._lastSampleAt;
+      if (intervalMs >= MIN_RATE_INTERVAL_MS) {
+        upRate = ((bytesUp - this._lastBytesUp) / intervalMs * 1000) / 1_000_000;
+        downRate = ((bytesDown - this._lastBytesDown) / intervalMs * 1000) / 1_000_000;
+      }
+    }
+
+    this._lastBytesUp = bytesUp;
+    this._lastBytesDown = bytesDown;
+    this._lastSampleAt = now;
+
+    this.speedHistory.push({ up: Math.max(0, upRate), down: Math.max(0, downRate) });
     if (this.speedHistory.length > MAX_HISTORY) {
       this.speedHistory.shift();
     }
 
-    this.activeConnections = extractConnections(data);
-    this.totalUpBytes = extractTotalBytes(data, 'up');
-    this.totalDownBytes = extractTotalBytes(data, 'down');
+    this.activeConnections = connections;
+    this.totalUpBytes = totalUp;
+    this.totalDownBytes = totalDown;
   }
 
-  /** Called by core-events service when a runtime/config event arrives. */
   applyRuntimeEvent(data: Record<string, unknown>) {
     const nodes = extractNodes(data);
     if (nodes.length > 0) {
@@ -279,7 +284,6 @@ class OverviewDataStore {
     if (!result.available || !result.response) return;
     this.applyPolicyEvent(result.response);
   }
-
 }
 
 export const overviewData = new OverviewDataStore();
