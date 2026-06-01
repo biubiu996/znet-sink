@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getLogs, clearLogs } from '$lib/services/core';
+  import { coreEvents } from '$lib/services/core-events.svelte';
   import type { LogEntry, LogLevel, LogSource } from '$lib/types/logs';
 
   let logs = $state<LogEntry[]>([]);
@@ -54,10 +55,19 @@
     return new Date(ms).toLocaleTimeString('zh-CN', { hour12: false });
   }
 
+  let _lastLogTick = -1;
+
+  // 挂载时初始加载 + 内核日志事件驱动刷新
   $effect(() => {
     refreshLogs();
-    const interval = setInterval(refreshLogs, 2000);
-    return () => clearInterval(interval);
+  });
+
+  $effect(() => {
+    const tick = coreEvents.logTick;
+    if (tick > 0 && tick !== _lastLogTick) {
+      _lastLogTick = tick;
+      refreshLogs();
+    }
   });
 </script>
 

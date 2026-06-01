@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getCoreProcessStatus, startCoreProcess, stopCoreProcess, getCoreConfigSnapshot, disableSystemProxy, getSystemProxyStatus } from '$lib/services/core';
+  import { coreEvents } from '$lib/services/core-events.svelte';
   import type { CoreProcessStatus, CoreKernelInfo } from '$lib/types/core';
   import { error as toastError, success, info, warning } from '$lib/services/toast.svelte';
   import { store } from '$lib/services/store.svelte';
@@ -21,7 +22,11 @@
   const hasFailed  = $derived(status?.state === 'failed');
   const isRetrying = $derived(retryTimer !== null);
 
-  const canStart = $derived(!isRunning && !isStarting && !snapshot?.warnings.length && !isRetrying);
+  const canStart = $derived(
+    !isRunning && !isStarting && !isRetrying &&
+    !(snapshot?.warnings.length) &&
+    snapshot?.hasActiveConfig !== false
+  );
 
   const stateLabel = $derived(
     loading     ? '处理中…'  :
@@ -74,10 +79,6 @@
         await stopCoreProcess();
         success('内核已停止');
       } else {
-        if (snapshot?.warnings.length) {
-          const proceed = confirm(`内核配置存在以下警告:\n\n${snapshot.warnings.map(w => '• ' + w).join('\n')}\n\n是否仍然启动？`);
-          if (!proceed) { loading = false; return; }
-        }
         await startCoreProcess();
         success('内核已启动');
       }
@@ -89,11 +90,22 @@
     }
   }
 
+  let _lastStatusTick = -1;
+
+  // 挂载：加载初始状态 + 校验配置
   $effect(() => {
     refreshStatus();
     validateConfig();
-    const interval = setInterval(refreshStatus, 5000);
-    return () => clearInterval(interval);
+  });
+
+  // 内核事件驱动刷新（引擎启动/停止、事件流连接/断开、配置变更）
+  $effect(() => {
+    const tick = coreEvents.statusTick;
+    if (tick > 0 && tick !== _lastStatusTick) {
+      _lastStatusTick = tick;
+      refreshStatus();
+      validateConfig();
+    }
   });
 
   async function handleCoreStopped(wasCrashed: boolean) {

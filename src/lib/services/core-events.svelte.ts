@@ -1,16 +1,47 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { startGuiEvents, stopGuiEvents, appendLog, getCoreStats, getCoreRuntime } from '$lib/services/core';
 import { overviewData } from '$lib/services/overview-data.svelte';
+import { warning as showWarningToast } from '$lib/services/toast.svelte';
 import type { CoreEventStatus, GuiEventPayload } from '$lib/types/core';
+import type { GuiConnectionItem } from '$lib/types/gui-api';
 
 const EVENT_NAME = 'gui:event';
 const STATUS_NAME = 'gui:event-status';
+
+// ── Exported types ──
+
+export type ConnectionDelta =
+  | { type: 'started'; connection: GuiConnectionItem }
+  | { type: 'updated'; connection: GuiConnectionItem }
+  | { type: 'closed'; flowId: string };
+
+export interface CoreWarning {
+  code?: string;
+  message: string;
+  timestamp: number;
+}
 
 class CoreEventsService {
   isSubscribed = $state(false);
   status = $state<'idle' | 'subscribed' | 'offline' | 'error' | 'disconnected'>('idle');
   lastError = $state<string | null>(null);
   connectionTick = $state(0);
+
+  // 日志刷新计数器（LogPanel 响应）
+  logTick = $state(0);
+
+  // 核心状态刷新计数器（CoreStatusCard 响应）
+  statusTick = $state(0);
+
+  // 内核警告
+  lastWarning = $state<CoreWarning | null>(null);
+  warnings = $state<CoreWarning[]>([]);
+
+  // 连接增量事件
+  private _deltaSeq = $state(0);
+  private _pendingDeltas: ConnectionDelta[] = [];
+
+  get deltaSeq() { return this._deltaSeq; }
 
   private _unlistenEvent: UnlistenFn | null = null;
   private _unlistenStatus: UnlistenFn | null = null;
@@ -47,6 +78,19 @@ class CoreEventsService {
     this._unlistenStatus?.();
     this._unlistenEvent = null;
     this._unlistenStatus = null;
+    this._pendingDeltas = [];
+  }
+
+  /** 获取并清空待处理的连接增量事件 */
+  drainDeltas(): ConnectionDelta[] {
+    const deltas = this._pendingDeltas;
+    this._pendingDeltas = [];
+    return deltas;
+  }
+
+  /** 清除所有警告（用户确认后调用） */
+  clearWarnings() {
+    this.warnings = [];
   }
 
   private _handleStatus(status: CoreEventStatus) {
@@ -59,27 +103,32 @@ class CoreEventsService {
         this.lastError = null;
         // Fetch initial state snapshot to fill gaps
         this._fetchInitialState();
+        this.statusTick++;
         break;
       case 'offline':
         this.isSubscribed = false;
         this.status = 'offline';
         this.lastError = status.error?.message ?? 'core is not available';
         overviewData.isLive = false;
+        this.statusTick++;
         break;
       case 'disconnected':
         this.isSubscribed = false;
         this.status = 'disconnected';
         overviewData.isLive = false;
+        this.statusTick++;
         break;
       case 'stopped':
         this.isSubscribed = false;
         this.status = 'idle';
+        this.statusTick++;
         break;
       case 'error':
         this.isSubscribed = false;
         this.status = 'error';
         this.lastError = status.error?.message ?? 'unknown error';
         overviewData.isLive = false;
+        this.statusTick++;
         break;
     }
   }
@@ -110,8 +159,52 @@ class CoreEventsService {
 
     if (eventType === 'core.configChanged') {
       awaitIgnore(this._fetchInitialState());
+      this.statusTick++;
       return;
     }
+
+    // ── 内核状态变化（引擎启动/停止）──
+    if (eventType === 'core.statusChanged') {
+      this._handleCoreStatus(data);
+      return;
+    }
+
+    // ── 内核警告通知 ──
+    if (eventType === 'core.warning') {
+      this._handleCoreWarning(data);
+      return;
+    }
+
+    // ── 连接实时事件（增量更新）──
+    if (eventType === 'connection.started' || eventType === 'connection.updated') {
+      const conn = this._parseConnectionEvent(data);
+      if (conn) {
+        this._pushDelta({
+          type: eventType === 'connection.started' ? 'started' : 'updated',
+          connection: conn,
+        });
+      }
+      this.connectionTick++;
+      return;
+    }
+
+    if (eventType === 'connection.closed') {
+      const flowId = this._extractFlowId(data);
+      if (flowId) {
+        this._pushDelta({ type: 'closed', flowId });
+      }
+      this.connectionTick++;
+      return;
+    }
+
+    // ── 未知事件 → 记录日志用于调试（但不要污染 UI）──
+    if (eventType === 'core.unknownEvent') {
+      this._logUnknownEvent(data, event.sourceEventType);
+      return;
+    }
+
+    // ══ 以下为兜底路由：靠字段特征匹配原始内核事件（旧兼容路径）══
+    // 新事件类型应在上方添加显式 handler，不应依赖此段匹配
 
     // Stats events
     if (
@@ -142,6 +235,7 @@ class CoreEventsService {
       const level = (typeof obj['level'] === 'string' ? obj['level'] : 'info') as 'trace' | 'debug' | 'info' | 'warn' | 'error';
       const message = typeof obj['message'] === 'string' ? obj['message'] : JSON.stringify(obj);
       appendLog({ source: 'core', level, message, fields: obj }).catch(() => {});
+      this.logTick++;
       return;
     }
 
@@ -155,6 +249,81 @@ class CoreEventsService {
       this.connectionTick++;
       return;
     }
+  }
+
+  // ── 内核警告 ──
+
+  private _handleCoreWarning(data: unknown) {
+    const obj = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+    const code = typeof obj['code'] === 'string' ? obj['code'] : undefined;
+    const message = typeof obj['message'] === 'string' ? obj['message'] : '内核引擎产生警告';
+
+    const w: CoreWarning = { code, message, timestamp: Date.now() };
+    this.lastWarning = w;
+    this.warnings = [w, ...this.warnings].slice(0, 50);
+
+    showWarningToast(message, 6000);
+  }
+
+  private _handleCoreStatus(data: unknown) {
+    const obj = data && typeof data === 'object' ? data as Record<string, unknown> : null;
+    if (!obj) return;
+
+    const healthy = typeof obj['healthy'] === 'boolean' ? obj['healthy'] : false;
+    overviewData.isLive = healthy;
+
+    // 引擎恢复 → 触发状态更新，下游组件可依此对账
+    if (healthy) {
+      awaitIgnore(this._fetchInitialState());
+    }
+    this.statusTick++;
+  }
+
+  // ── 连接增量 ──
+
+  private _pushDelta(delta: ConnectionDelta) {
+    this._pendingDeltas.push(delta);
+    this._deltaSeq++;
+  }
+
+  private _parseConnectionEvent(data: unknown): GuiConnectionItem | null {
+    if (!data || typeof data !== 'object') return null;
+    const o = data as Record<string, unknown>;
+    const flowId = typeof o['flowId'] === 'string' ? o['flowId'] : null;
+    if (!flowId) return null;
+
+    return {
+      flowId,
+      network: typeof o['network'] === 'string' ? o['network'] : 'tcp',
+      source: typeof o['source'] === 'string' ? o['source'] : undefined,
+      destination: typeof o['destination'] === 'string' ? o['destination'] : '-',
+      inboundTag: typeof o['inboundTag'] === 'string' ? o['inboundTag'] : undefined,
+      outboundTag: typeof o['outboundTag'] === 'string' ? o['outboundTag'] : undefined,
+      policyTag: typeof o['policyTag'] === 'string' ? o['policyTag'] : undefined,
+      routeMode: typeof o['routeMode'] === 'string' ? o['routeMode'] : undefined,
+      outcome: typeof o['outcome'] === 'string' ? o['outcome'] : undefined,
+      bytesUp: typeof o['bytesUp'] === 'number' ? o['bytesUp'] : 0,
+      bytesDown: typeof o['bytesDown'] === 'number' ? o['bytesDown'] : 0,
+      throughputUpBps: typeof o['throughputUpBps'] === 'number' ? o['throughputUpBps'] : undefined,
+      throughputDownBps: typeof o['throughputDownBps'] === 'number' ? o['throughputDownBps'] : undefined,
+      startedAtUnixMs: typeof o['startedAtUnixMs'] === 'number' ? o['startedAtUnixMs'] : undefined,
+      updatedAtUnixMs: typeof o['updatedAtUnixMs'] === 'number' ? o['updatedAtUnixMs'] : undefined,
+      durationMs: typeof o['durationMs'] === 'number' ? o['durationMs'] : undefined,
+    };
+  }
+
+  private _extractFlowId(data: unknown): string | null {
+    if (!data || typeof data !== 'object') return null;
+    const o = data as Record<string, unknown>;
+    return typeof o['flowId'] === 'string' ? o['flowId'] : null;
+  }
+
+  private _logUnknownEvent(data: unknown, sourceType: string) {
+    const summary = data && typeof data === 'object'
+      ? JSON.stringify(data).slice(0, 200)
+      : String(data ?? 'null').slice(0, 200);
+    console.debug('[ZNet] unknown core event', { sourceType, summary });
+    // 不写入用户日志面板——这不是用户可操作的信息
   }
 
   private _hasAnyKey(obj: Record<string, unknown>, keys: string[]): boolean {

@@ -1,9 +1,7 @@
-import { getCorePolicies, getCoreStats, getCoreRuntime } from '$lib/services/core';
+import { getCorePolicies } from '$lib/services/core';
 import type { ProxyNode } from '$lib/types/protocol';
 
 const MAX_HISTORY = 300; // 5 minutes at 1-second sampling
-const STATS_INTERVAL_MS = 1000;
-const RUNTIME_INTERVAL_MS = 30_000;
 
 function extractSpeed(data: unknown, direction: 'up' | 'down'): number {
   if (!data || typeof data !== 'object') return 0;
@@ -245,23 +243,6 @@ class OverviewDataStore {
   get totalUpMB() { return this.totalUpBytes / 1_000_000; }
   get totalDownMB() { return this.totalDownBytes / 1_000_000; }
 
-  private _statsTimer: ReturnType<typeof setInterval> | null = null;
-  private _runtimeTimer: ReturnType<typeof setInterval> | null = null;
-  private _runtimeTicks = 0;
-
-  start() {
-    if (this._statsTimer) return;
-    this._pollStats();
-    this._pollRuntime();
-    this._statsTimer = setInterval(() => this._pollStats(), STATS_INTERVAL_MS);
-    this._runtimeTimer = setInterval(() => this._pollRuntime(), RUNTIME_INTERVAL_MS);
-  }
-
-  stop() {
-    if (this._statsTimer) { clearInterval(this._statsTimer); this._statsTimer = null; }
-    if (this._runtimeTimer) { clearInterval(this._runtimeTimer); this._runtimeTimer = null; }
-  }
-
   /** Called by core-events service when a stats event arrives via gui:event stream. */
   applyStatsEvent(data: Record<string, unknown>) {
     this.isLive = true;
@@ -299,50 +280,6 @@ class OverviewDataStore {
     this.applyPolicyEvent(result.response);
   }
 
-  private async _pollStats() {
-    try {
-      const result = await getCoreStats();
-      if (!result.available || !result.response) {
-        this.isLive = false;
-        return;
-      }
-      this.isLive = true;
-
-      const up = extractSpeed(result.response, 'up');
-      const down = extractSpeed(result.response, 'down');
-
-      this.speedHistory.push({ up, down });
-      if (this.speedHistory.length > MAX_HISTORY) {
-        this.speedHistory.shift();
-      }
-
-      this.activeConnections = extractConnections(result.response);
-      this.totalUpBytes = extractTotalBytes(result.response, 'up');
-      this.totalDownBytes = extractTotalBytes(result.response, 'down');
-    } catch {
-      this.isLive = false;
-    }
-  }
-
-  private async _pollRuntime() {
-    this._runtimeTicks++;
-    // Poll runtime less frequently or on first tick
-    if (this._runtimeTicks > 1 && this._runtimeTicks % (RUNTIME_INTERVAL_MS / STATS_INTERVAL_MS) !== 0) return;
-
-    try {
-      const result = await getCoreRuntime();
-      if (!result.available || !result.response) return;
-
-      const nodes = extractNodes(result.response);
-      if (nodes.length > 0) {
-        this.proxyNodes = nodes;
-      } else {
-        await this.refreshPolicyNodes();
-      }
-    } catch {
-      // Runtime might not be available yet
-    }
-  }
 }
 
 export const overviewData = new OverviewDataStore();

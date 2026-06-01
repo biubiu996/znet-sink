@@ -1,5 +1,4 @@
-import { browser } from '$app/environment';
-import { 
+import {
   getGuiSelfTestSnapshot,
   getGuiConnectionStatus,
   guiConnect,
@@ -33,15 +32,13 @@ class GuiStateStore {
   isDisconnecting = $state(false);
   isSwitchingMode = $state(false);
   
-  private pollingInterval: number | null = null;
   private isInitialized = false;
 
   async initialize() {
     if (this.isInitialized) return;
     this.isInitialized = true;
-    
+
     await this.refreshAll();
-    this.startPolling();
   }
 
   async refreshAll() {
@@ -136,28 +133,7 @@ class GuiStateStore {
     }
   }
 
-  private startPolling() {
-    if (!browser) return;
-    
-    this.stopPolling();
-    this.pollingInterval = window.setInterval(() => {
-      Promise.allSettled([
-        this.refreshConnectionStatus(),
-        this.refreshTrafficStats(),
-        this.refreshCoreOverview(),
-      ]);
-    }, 2000);
-  }
-
-  private stopPolling() {
-    if (this.pollingInterval !== null) {
-      clearInterval(this.pollingInterval);
-      this.pollingInterval = null;
-    }
-  }
-
   destroy() {
-    this.stopPolling();
     this.isInitialized = false;
   }
 

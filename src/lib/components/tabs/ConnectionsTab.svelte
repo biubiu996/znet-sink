@@ -2,7 +2,7 @@
   import { getGuiConnections, guiCloseConnection, queryFlows, closeFlow, handleAppError, type FlowInfo } from '$lib/services/core';
   import { store } from '$lib/services/store.svelte';
   import { overviewData } from '$lib/services/overview-data.svelte';
-  import { coreEvents } from '$lib/services/core-events.svelte';
+  import { coreEvents, type ConnectionDelta } from '$lib/services/core-events.svelte';
   import type { GuiConnectionItem } from '$lib/types/gui-api';
 
   type DisplayConnection = {
@@ -146,23 +146,98 @@
     }
   }
 
-  let _lastEventTick = -1;
-
-  // Poll on mount + every 3s
+  // 挂载：加载初始连接列表
   $effect(() => {
     refresh();
-    const interval = setInterval(refresh, 3000);
-    return () => clearInterval(interval);
   });
 
-  // React to live connection events from core event stream
+  // 事件流重新订阅后对账（弥补断连期间丢失的事件）
+  let _prevSubscribed = false;
   $effect(() => {
-    const tick = coreEvents.connectionTick;
-    if (tick > 0 && tick !== _lastEventTick) {
-      _lastEventTick = tick;
+    const sub = coreEvents.status === 'subscribed';
+    if (sub && !_prevSubscribed) {
       refresh();
     }
+    _prevSubscribed = sub;
   });
+
+  // 实时增量更新（来自内核事件流）
+  $effect(() => {
+    const seq = coreEvents.deltaSeq;
+    if (seq === 0) return;
+
+    const deltas = coreEvents.drainDeltas();
+    if (deltas.length === 0) return;
+
+    applyDeltas(deltas);
+  });
+
+  function applyDeltas(deltas: ConnectionDelta[]) {
+    const addMap = new Map<string, DisplayConnection>();
+    const updateMap = new Map<string, Partial<DisplayConnection>>();
+    const removeSet = new Set<string>();
+
+    for (const delta of deltas) {
+      switch (delta.type) {
+        case 'started':
+          addMap.set(delta.connection.flowId, mapGuiConnection(delta.connection));
+          removeSet.delete(delta.connection.flowId);
+          updateMap.delete(delta.connection.flowId);
+          break;
+        case 'updated':
+          if (!removeSet.has(delta.connection.flowId) && !addMap.has(delta.connection.flowId)) {
+            const u = delta.connection;
+            updateMap.set(delta.connection.flowId, {
+              bytesUp: u.bytesUp,
+              bytesDown: u.bytesDown,
+              throughputUpBps: u.throughputUpBps,
+              throughputDownBps: u.throughputDownBps,
+              updatedAtUnixMs: u.updatedAtUnixMs ?? Date.now(),
+              durationMs: u.durationMs,
+              outcome: u.outcome,
+              routeMode: u.routeMode,
+            });
+          }
+          break;
+        case 'closed':
+          removeSet.add(delta.flowId);
+          addMap.delete(delta.flowId);
+          updateMap.delete(delta.flowId);
+          break;
+      }
+    }
+
+    if (addMap.size === 0 && updateMap.size === 0 && removeSet.size === 0) return;
+
+    connections = [
+      ...Array.from(addMap.values()),
+      ...connections
+        .filter(c => !removeSet.has(c.flowId) && !addMap.has(c.flowId))
+        .map(c => {
+          const update = updateMap.get(c.flowId);
+          if (!update) return c;
+          return {
+            ...c,
+            bytesUp: update.bytesUp ?? c.bytesUp,
+            bytesDown: update.bytesDown ?? c.bytesDown,
+            throughputUpBps: update.throughputUpBps ?? c.throughputUpBps,
+            throughputDownBps: update.throughputDownBps ?? c.throughputDownBps,
+            updatedAtUnixMs: update.updatedAtUnixMs ?? c.updatedAtUnixMs,
+            durationMs: update.durationMs ?? c.durationMs,
+            outcome: update.outcome ?? c.outcome,
+            routeMode: update.routeMode ?? c.routeMode,
+          };
+        }),
+    ];
+
+    // 清理已移除连接的展开状态
+    if (removeSet.size > 0) {
+      const nextExpanded = new Set([...expandedIds].filter(id => !removeSet.has(id)));
+      if (nextExpanded.size !== expandedIds.size) {
+        expandedIds = nextExpanded;
+      }
+    }
+  }
 </script>
 
 <div class="desk-card flex-1 overflow-hidden flex flex-col animate-fade-in">
