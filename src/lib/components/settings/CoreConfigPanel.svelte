@@ -221,6 +221,13 @@
     return false;
   }
 
+  // 标记每个渠道的第一个（最新）版本
+  function isLatestInChannel(release: KernelRelease): boolean {
+    const channelVersions = channelFilteredVersions;
+    if (channelVersions.length === 0) return false;
+    return channelVersions[0].version === release.version;
+  }
+
   $effect(() => {
     refresh();
   });
@@ -406,6 +413,9 @@
           <div class="version-row" class:current={isCurrentVersion(release.version)}>
             <div class="version-info">
               <span class="version-tag">v{release.version}</span>
+              {#if isLatestInChannel(release)}
+                <Badge variant="default" class="text-xs">最新</Badge>
+              {/if}
               {#if isCurrentVersion(release.version)}
                 <Badge variant="secondary" class="text-xs">当前</Badge>
               {/if}

@@ -19,6 +19,7 @@
       "path": "./node_modules/cz-conventional-changelog"
     }
   },
+  "author": "ZeroDenet <zerodenet.org>",
   "license": "MIT",
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",

@@ -4,6 +4,8 @@
   import { guiState } from '$lib/services/gui-state.svelte';
   import TrafficChart from '$lib/components/TrafficChart.svelte';
   import CoreStatusCard from '$lib/components/core/CoreStatusCard.svelte';
+  import KernelVersionCard from '$lib/components/core/KernelVersionCard.svelte';
+  import TunStackStatus from '$lib/components/core/TunStackStatus.svelte';
   import LogPanel from '$lib/components/core/LogPanel.svelte';
   import { Badge } from '$lib/components/ui/badge';
 
@@ -96,6 +98,14 @@
           </div>
         </div>
       </div>
+
+      <!-- Kernel version -->
+      <KernelVersionCard />
+
+      <!-- TUN / Stack status (v0.0.5+) -->
+      {#if store.isFeatureVisible('tun') || store.isFeatureVisible('systemStack')}
+        <TunStackStatus />
+      {/if}
     </div>
 
     <!-- Row 2: Self-test -->
@@ -263,6 +273,8 @@
           </div>
         </div>
       </div>
+
+      <KernelVersionCard />
     </div>
 
     <!-- Self-test -->
