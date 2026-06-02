@@ -78,6 +78,7 @@ pub fn run() {
         .manage(app_state)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // ── Phase 4: Register commands ──
         .invoke_handler(tauri::generate_handler![
             core_commands::core_ipc_default_endpoint,

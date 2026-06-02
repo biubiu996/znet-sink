@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { getName, getVersion, getTauriVersion } from '@tauri-apps/api/app';
+  import { getName, getVersion } from '@tauri-apps/api/app';
+  import { updater } from '$lib/services/updater.svelte';
 
   let appName = $state('ZNet Sink');
   let appVersion = $state('0.0.1');
-  let tauriVersion = $state('');
   let loaded = $state(false);
 
   $effect(() => {
@@ -12,21 +12,29 @@
 
   async function loadAppInfo() {
     try {
-      const [name, ver, tauriVer] = await Promise.all([
+      const [name, ver] = await Promise.all([
         getName(),
         getVersion(),
-        getTauriVersion(),
       ]);
       appName = name;
       appVersion = ver;
-      tauriVersion = tauriVer;
     } catch {
-      // running outside Tauri (browser dev), use defaults from package.json
+      // running outside Tauri (browser dev), use defaults
       appName = 'ZNet Sink';
       appVersion = '0.0.1';
-      tauriVersion = '—';
     }
     loaded = true;
+  }
+
+  async function handleCheckUpdate() {
+    const hasUpdate = await updater.checkForUpdate();
+    if (!hasUpdate) {
+      // toast handled in service
+    }
+  }
+
+  async function handleDownloadUpdate() {
+    await updater.downloadAndInstall();
   }
 </script>
 
@@ -34,13 +42,7 @@
   <!-- Hero -->
   <div class="about-hero">
     <div class="about-logo">
-      <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
-        <rect width="36" height="36" rx="10" fill="var(--primary)" opacity="0.12"/>
-        <rect x="2" y="2" width="32" height="32" rx="9" stroke="var(--primary)" stroke-width="1.5" opacity="0.3"/>
-        <path d="M10 14 L18 10 L26 14" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M10 18 L18 22 L26 18" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.6"/>
-        <path d="M10 22 L18 26 L26 22" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.35"/>
-      </svg>
+      <img src="/app-icon.png" alt="ZNet Sink" width="48" height="48" class="app-logo-img" />
     </div>
     <div class="about-hero-text">
       <span class="about-hero-name">{appName}</span>
@@ -67,11 +69,6 @@
     <div class="config-row">
       <span class="config-label">版本号</span>
       <span class="config-value mono">v{appVersion}</span>
-    </div>
-
-    <div class="config-row">
-      <span class="config-label">Tauri 版本</span>
-      <span class="config-value mono">{tauriVersion || '—'}</span>
     </div>
 
     <div class="config-row">
@@ -110,13 +107,65 @@
 
     <div class="config-row">
       <span class="config-label">描述</span>
-      <span class="config-value desc">ZNet Sink 是一款轻量级网络代理管理客户端，基于 Tauri 2 构建，提供配置管理、订阅同步、规则集编辑与实时连接监控等能力。</span>
+      <span class="config-value desc">ZNet Sink 是一款轻量级网络代理管理客户端，提供配置管理、订阅同步、规则集编辑、实时连接监控、TUN 虚拟网卡等能力。</span>
     </div>
+  </div>
+
+  <!-- Update -->
+  <div class="config-separator"></div>
+
+  <div class="config-section">
+    <div class="config-section-title">更新</div>
+
+    {#if updater.checking}
+      <div class="config-row">
+        <span class="config-label">状态</span>
+        <span class="config-value muted">检查中…</span>
+      </div>
+    {:else if updater.updateAvailable}
+      <div class="update-banner">
+        <div class="update-banner-header">
+          <svg width="14" height="14" viewBox="0 0 10 10" fill="none" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 1.5v5M2.5 4L5 6.5 7.5 4"/>
+            <line x1="1" y1="9" x2="9" y2="9"/>
+          </svg>
+          <span class="update-banner-title">新版本可用</span>
+        </div>
+        <div class="update-banner-body">
+          <span>v{updater.latestVersion}（当前 v{updater.currentVersion}）</span>
+          {#if updater.releaseNotes}
+            <span class="update-notes">{updater.releaseNotes.slice(0, 200)}{updater.releaseNotes.length > 200 ? '…' : ''}</span>
+          {/if}
+        </div>
+        <button
+          class="update-btn"
+          onclick={handleDownloadUpdate}
+          disabled={updater.downloading}
+        >
+          {updater.downloading ? '下载中…' : '下载并安装'}
+        </button>
+      </div>
+    {:else}
+      <div class="config-row">
+        <span class="config-label">状态</span>
+        <span class="config-value">已是最新</span>
+      </div>
+      <div class="config-row">
+        <span class="config-label"></span>
+        <button class="check-update-btn" onclick={handleCheckUpdate} disabled={updater.checking}>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="1 6 3 8 7 2"/>
+            <path d="M11 6A5 5 0 1 1 9.6 2.4"/>
+          </svg>
+          <span>检查更新</span>
+        </button>
+      </div>
+    {/if}
   </div>
 
   <!-- Footer -->
   <div class="about-footer">
-    <span class="about-copyright">&copy; {new Date().getFullYear()} ZeroNet. All rights reserved.</span>
+    <span class="about-copyright">&copy; {new Date().getFullYear()} ZeroDenet. All rights reserved.</span>
   </div>
 </div>
 
@@ -137,6 +186,11 @@
 
   .about-logo {
     flex-shrink: 0;
+  }
+
+  .app-logo-img {
+    border-radius: 10px;
+    display: block;
   }
 
   .about-hero-text {
@@ -263,6 +317,95 @@
   .link-icon {
     flex-shrink: 0;
     opacity: 0.5;
+  }
+
+  .config-value.muted {
+    color: var(--muted-foreground);
+    opacity: 0.6;
+  }
+
+  /* ---- Update banner ---- */
+  .update-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 4px 12px;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(245, 158, 11, 0.25);
+    background: rgba(245, 158, 11, 0.06);
+  }
+
+  .update-banner-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .update-banner-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #D97706;
+  }
+
+  .update-banner-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--foreground);
+    line-height: 1.5;
+  }
+
+  .update-notes {
+    font-size: 11px;
+    color: var(--muted-foreground);
+    line-height: 1.45;
+    white-space: pre-line;
+  }
+
+  .update-btn {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 30px;
+    padding: 0 16px;
+    border-radius: 7px;
+    border: none;
+    background: #D97706;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.13s ease;
+  }
+
+  .update-btn:hover:not(:disabled) { opacity: 0.88; }
+  .update-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .check-update-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: none;
+    background: transparent;
+    color: var(--primary);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 4px 6px;
+    border-radius: 5px;
+    transition: background 0.12s ease;
+  }
+
+  .check-update-btn:hover:not(:disabled) {
+    background: var(--muted);
+  }
+
+  .check-update-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 
   /* ---- Footer ---- */

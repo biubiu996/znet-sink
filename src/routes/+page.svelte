@@ -4,6 +4,7 @@
   import { guiState } from '$lib/services/gui-state.svelte';
   import { coreEvents } from '$lib/services/core-events.svelte';
   import { initTheme, applyTheme } from '$lib/services/theme.svelte';
+  import { updater } from '$lib/services/updater.svelte';
   import TitleBar from '$lib/components/TitleBar.svelte';
   import AppHeader from '$lib/components/AppHeader.svelte';
   import TabContent from '$lib/components/TabContent.svelte';
@@ -25,6 +26,8 @@
     if (store.isInitialized) {
       guiState.initialize();
       coreEvents.start();
+      // 启动后延迟检查更新（不阻塞 UI）
+      setTimeout(() => { updater.checkForUpdate(); }, 3000);
     } else {
       guiState.destroy();
       coreEvents.stop();
