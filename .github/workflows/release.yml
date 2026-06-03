@@ -123,3 +123,12 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           files: latest.json
+
+      - name: Generate auto release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ github.ref_name }}" \
+            --generate-notes \
+            --repo "${{ github.repository }}" \
+            --latest
