@@ -20,8 +20,23 @@ pub fn status(state: State<'_, AppState>) -> AppResult<CoreProcessStatus> {
 }
 
 pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<CoreProcessStatus> {
-    let config = lock(state.app_config(), "app_config")?.core.clone();
+    let config = {
+        lock(state.app_config(), "app_config")?.core.clone()
+    };
     let snapshot = core_config::snapshot_from_config(&config)?;
+
+    // Require config_path — the kernel's `run` command needs a config file
+    if snapshot.config_path.is_none() {
+        let has_active = lock(state.proxy_configs(), "proxy_config")?
+            .iter()
+            .any(|p| p.active);
+        let hint = if has_active {
+            "有活跃代理配置但尚未导出，请先设置代理模式"
+        } else {
+            "没有活跃代理配置，请先创建并激活代理配置"
+        };
+        return Err(AppError::invalid_argument(hint));
+    }
 
     if let Err(error) = snapshot.validate_launchable() {
         let message = format!("failed to start core process: {error}");
