@@ -22,6 +22,7 @@ pub struct GuiCoreOverview {
 pub struct GuiConnectionStatus {
     pub connected: bool,
     pub stage: String,
+    pub core_available: bool,
     pub process: CoreProcessStatus,
     pub system_proxy: Option<SystemProxyStatus>,
     pub health: Option<GuiCoreHealth>,

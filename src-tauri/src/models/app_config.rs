@@ -13,6 +13,8 @@ pub struct AppConfig {
     pub ui: AppUiConfig,
     #[serde(default)]
     pub local_proxy: AppLocalProxyConfig,
+    #[serde(default)]
+    pub tun: AppTunConfig,
 }
 
 impl Default for AppConfig {
@@ -23,6 +25,7 @@ impl Default for AppConfig {
             logs: AppLogConfig::default(),
             ui: AppUiConfig::default(),
             local_proxy: AppLocalProxyConfig::default(),
+            tun: AppTunConfig::default(),
         }
     }
 }
@@ -119,6 +122,30 @@ pub struct AppLocalProxyConfig {
     pub source_proxy_config_id: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppTunConfig {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default = "default_tun_addr")]
+    pub addr: String,
+    #[serde(default = "default_tun_tag")]
+    pub tag: String,
+    #[serde(default = "default_tun_mtu")]
+    pub mtu: u16,
+}
+
+impl Default for AppTunConfig {
+    fn default() -> Self {
+        Self {
+            name: None,
+            addr: default_tun_addr(),
+            tag: default_tun_tag(),
+            mtu: default_tun_mtu(),
+        }
+    }
+}
+
 impl Default for AppLocalProxyConfig {
     fn default() -> Self {
         Self {
@@ -136,6 +163,7 @@ pub struct AppConfigPatch {
     pub logs: Option<AppLogConfigPatch>,
     pub ui: Option<AppUiConfigPatch>,
     pub local_proxy: Option<AppLocalProxyConfigPatch>,
+    pub tun: Option<AppTunConfigPatch>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -176,6 +204,15 @@ pub struct AppLocalProxyConfigPatch {
     pub source_proxy_config_id: Option<Option<String>>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppTunConfigPatch {
+    pub name: Option<Option<String>>,
+    pub addr: Option<String>,
+    pub tag: Option<String>,
+    pub mtu: Option<u16>,
+}
+
 fn default_schema_version() -> String {
     "gui.app.v1".to_string()
 }
@@ -210,4 +247,16 @@ fn default_local_proxy_host() -> String {
 
 fn default_local_proxy_port() -> u16 {
     7890
+}
+
+fn default_tun_addr() -> String {
+    "10.0.0.1/24".to_string()
+}
+
+fn default_tun_tag() -> String {
+    "proxy".to_string()
+}
+
+fn default_tun_mtu() -> u16 {
+    1500
 }

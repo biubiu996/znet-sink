@@ -12,6 +12,7 @@ pub mod gui_events;
 pub mod gui_self_test;
 pub mod interaction_mode;
 pub mod kernel_manager;
+pub mod local_proxy;
 pub mod log_store;
 pub mod logs;
 pub mod proxy_config;
@@ -28,8 +29,8 @@ mod proxy_mode_tests;
 #[cfg(test)]
 mod zero_adapter_tests;
 
-use std::path::PathBuf;
 use crate::errors::{AppError, AppResult};
+use std::path::PathBuf;
 
 /// Single source of truth for the application data directory.
 ///

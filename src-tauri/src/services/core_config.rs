@@ -6,6 +6,7 @@ use tauri::State;
 
 use std::io::Read;
 
+use super::data_dir;
 use crate::core::ipc;
 use crate::errors::{AppError, AppResult};
 use crate::models::{
@@ -13,7 +14,6 @@ use crate::models::{
     core::{CoreEndpoint, CoreIpcOptions},
     core_config::{CoreConfigExportResult, CoreConfigSnapshot, CoreDownloadResult, CoreKernelInfo},
 };
-use super::data_dir;
 use crate::services::app_config_store;
 use crate::services::common::{self, lock, normalize_optional};
 use crate::state::app_state::AppState;
@@ -111,7 +111,10 @@ pub fn snapshot_from_config(config: &AppCoreConfig) -> AppResult<CoreConfigSnaps
     })
 }
 
-pub fn inspect_from_config(config: &AppCoreConfig, has_active_config: bool) -> AppResult<CoreKernelInfo> {
+pub fn inspect_from_config(
+    config: &AppCoreConfig,
+    has_active_config: bool,
+) -> AppResult<CoreKernelInfo> {
     let executable_path = resolve_executable_path(config);
     let executable_exists = executable_path.as_ref().is_some_and(|path| path.is_file());
     let metadata = executable_path
@@ -253,9 +256,8 @@ pub fn download_latest(install_dir: Option<String>) -> AppResult<CoreDownloadRes
         Some(d) if !d.trim().is_empty() => PathBuf::from(d.trim()),
         _ => data_dir()?.join("core"),
     };
-    fs::create_dir_all(&dir).map_err(|e| AppError::internal(
-        format!("failed to create install dir: {e}"),
-    ))?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| AppError::internal(format!("failed to create install dir: {e}")))?;
 
     let client = reqwest::blocking::Client::builder()
         .user_agent("znet-sink")
@@ -277,9 +279,9 @@ pub fn download_latest(install_dir: Option<String>) -> AppResult<CoreDownloadRes
         .map_err(|e| AppError::internal(format!("failed to parse release info: {e}")))?;
 
     let version = release["tag_name"].as_str().map(|s: &str| s.to_string());
-    let assets = release["assets"].as_array().ok_or_else(|| {
-        AppError::internal("no assets found in latest release")
-    })?;
+    let assets = release["assets"]
+        .as_array()
+        .ok_or_else(|| AppError::internal("no assets found in latest release"))?;
 
     // Determine platform asset name
     let asset_name = if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
@@ -294,18 +296,21 @@ pub fn download_latest(install_dir: Option<String>) -> AppResult<CoreDownloadRes
         return Err(AppError::internal("unsupported platform"));
     };
 
-    let asset = assets.iter().find(|a| {
-        a["name"].as_str().map(|n| n == asset_name).unwrap_or(false)
-    }).ok_or_else(|| {
-        AppError::internal(format!("asset not found for platform: {asset_name}"))
-    })?;
+    let asset = assets
+        .iter()
+        .find(|a| a["name"].as_str().map(|n| n == asset_name).unwrap_or(false))
+        .ok_or_else(|| AppError::internal(format!("asset not found for platform: {asset_name}")))?;
 
     let download_url = asset["browser_download_url"]
         .as_str()
         .ok_or_else(|| AppError::internal("no download url in asset"))?;
 
     // Download
-    let ext = if asset_name.ends_with(".tar.gz") { "tar.gz" } else { "zip" };
+    let ext = if asset_name.ends_with(".tar.gz") {
+        "tar.gz"
+    } else {
+        "zip"
+    };
     let temp_file = dir.join(format!("zero-download.{}", ext));
 
     let mut response = client
@@ -314,7 +319,8 @@ pub fn download_latest(install_dir: Option<String>) -> AppResult<CoreDownloadRes
         .map_err(|e| AppError::internal(format!("failed to download: {e}")))?;
 
     let mut bytes = Vec::new();
-    response.read_to_end(&mut bytes)
+    response
+        .read_to_end(&mut bytes)
         .map_err(|e| AppError::internal(format!("failed to read download: {e}")))?;
 
     fs::write(&temp_file, &bytes)
@@ -323,7 +329,12 @@ pub fn download_latest(install_dir: Option<String>) -> AppResult<CoreDownloadRes
     // Extract
     if ext == "tar.gz" {
         let status = common::background_command("tar")
-            .args(["-xzf", &path_to_string(&temp_file), "-C", &path_to_string(&dir)])
+            .args([
+                "-xzf",
+                &path_to_string(&temp_file),
+                "-C",
+                &path_to_string(&dir),
+            ])
             .status()
             .map_err(|e| AppError::internal(format!("failed to extract: {e}")))?;
         if !status.success() {
@@ -333,9 +344,13 @@ pub fn download_latest(install_dir: Option<String>) -> AppResult<CoreDownloadRes
     } else {
         let status = common::background_command("powershell")
             .args([
-                "-NoProfile", "-Command",
-                &format!("Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                    path_to_string(&temp_file), path_to_string(&dir)),
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                    path_to_string(&temp_file),
+                    path_to_string(&dir)
+                ),
             ])
             .status()
             .map_err(|e| AppError::internal(format!("failed to extract: {e}")))?;
@@ -364,11 +379,16 @@ pub fn download_latest(install_dir: Option<String>) -> AppResult<CoreDownloadRes
             .map_err(|e| AppError::internal(format!("failed to read permissions: {e}")))?
             .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&executable_path, perms)
-            .map_err(|e| AppError::internal(format!("failed to set executable permissions: {e}")))?;
+        fs::set_permissions(&executable_path, perms).map_err(|e| {
+            AppError::internal(format!("failed to set executable permissions: {e}"))
+        })?;
     }
 
-    let message = format!("zero {} installed to {}", version.as_deref().unwrap_or("?"), path_to_string(&dir));
+    let message = format!(
+        "zero {} installed to {}",
+        version.as_deref().unwrap_or("?"),
+        path_to_string(&dir)
+    );
 
     Ok(CoreDownloadResult {
         success: true,
@@ -378,15 +398,143 @@ pub fn download_latest(install_dir: Option<String>) -> AppResult<CoreDownloadRes
     })
 }
 
-/// Remove GUI-only fields that the core engine does not understand.
-/// Currently strips: top-level `mode`, `route.mode`.
+/// Convert GUI-only routing state into the Zero config schema accepted by the core.
 fn strip_gui_only_fields(content: &serde_json::Value) -> serde_json::Value {
     let mut cleaned = content.clone();
     if let Some(obj) = cleaned.as_object_mut() {
         obj.remove("mode");
-        if let Some(route) = obj.get_mut("route").and_then(|r| r.as_object_mut()) {
-            route.remove("mode");
-        }
+        translate_route_mode_for_export(obj);
     }
     cleaned
+}
+
+fn translate_route_mode_for_export(root: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(route) = root
+        .get_mut("route")
+        .and_then(|route| route.as_object_mut())
+    else {
+        return;
+    };
+    let mode = route.remove("mode");
+    let Some(mode) = mode.as_ref() else {
+        return;
+    };
+
+    match route_mode_kind(mode).as_deref() {
+        Some("global") => {
+            let outbound = route_mode_outbound(mode)
+                .or_else(|| route_final_outbound(route))
+                .unwrap_or_else(|| "proxy".to_string());
+            route.insert(
+                "final".to_string(),
+                serde_json::json!({ "type": "route", "outbound": outbound }),
+            );
+            route.insert("rules".to_string(), serde_json::Value::Array(Vec::new()));
+            route.remove("rule_sets");
+        }
+        Some("direct") => {
+            route.insert("final".to_string(), serde_json::json!({ "type": "direct" }));
+            route.insert("rules".to_string(), serde_json::Value::Array(Vec::new()));
+            route.remove("rule_sets");
+        }
+        Some("rule") | None => {}
+        Some(_) => {}
+    }
+}
+
+fn route_mode_kind(mode: &serde_json::Value) -> Option<String> {
+    mode.as_str()
+        .or_else(|| mode.get("type").and_then(serde_json::Value::as_str))
+        .or_else(|| mode.get("kind").and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|kind| !kind.is_empty())
+        .map(|kind| kind.to_ascii_lowercase())
+}
+
+fn route_mode_outbound(mode: &serde_json::Value) -> Option<String> {
+    mode.get("outbound")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|outbound| !outbound.is_empty())
+        .map(ToString::to_string)
+}
+
+fn route_final_outbound(route: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    route
+        .get("final")
+        .and_then(|final_route| final_route.get("outbound"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|outbound| !outbound.is_empty())
+        .map(ToString::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_gui_only_fields;
+    use serde_json::json;
+
+    #[test]
+    fn exported_config_strips_route_mode_and_maps_global_to_final_route() {
+        let content = json!({
+            "mode": { "type": "global", "outbound": "legacy-proxy" },
+            "route": {
+                "mode": { "type": "global", "outbound": "proxy" },
+                "rules": [{ "action": { "type": "direct" } }],
+                "rule_sets": ["cn"],
+                "final": { "type": "direct" }
+            }
+        });
+
+        let cleaned = strip_gui_only_fields(&content);
+
+        assert!(cleaned.get("mode").is_none());
+        assert!(cleaned["route"].get("mode").is_none());
+        assert_eq!(
+            cleaned["route"]["final"],
+            json!({ "type": "route", "outbound": "proxy" })
+        );
+        assert_eq!(cleaned["route"]["rules"], json!([]));
+        assert!(cleaned["route"].get("rule_sets").is_none());
+    }
+
+    #[test]
+    fn exported_config_strips_route_mode_and_maps_direct_to_final_direct() {
+        let content = json!({
+            "route": {
+                "mode": { "type": "direct" },
+                "rules": [{ "action": { "type": "route", "outbound": "proxy" } }],
+                "final": { "type": "route", "outbound": "proxy" }
+            }
+        });
+
+        let cleaned = strip_gui_only_fields(&content);
+
+        assert!(cleaned["route"].get("mode").is_none());
+        assert_eq!(cleaned["route"]["final"], json!({ "type": "direct" }));
+        assert_eq!(cleaned["route"]["rules"], json!([]));
+    }
+
+    #[test]
+    fn exported_config_strips_route_mode_and_preserves_rule_routing() {
+        let content = json!({
+            "route": {
+                "mode": { "type": "rule" },
+                "rules": [{ "action": { "type": "direct" } }],
+                "final": { "type": "route", "outbound": "proxy" }
+            }
+        });
+
+        let cleaned = strip_gui_only_fields(&content);
+
+        assert!(cleaned["route"].get("mode").is_none());
+        assert_eq!(
+            cleaned["route"]["rules"],
+            json!([{ "action": { "type": "direct" } }])
+        );
+        assert_eq!(
+            cleaned["route"]["final"],
+            json!({ "type": "route", "outbound": "proxy" })
+        );
+    }
 }

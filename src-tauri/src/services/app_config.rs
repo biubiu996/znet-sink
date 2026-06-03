@@ -129,12 +129,35 @@ pub fn update(state: State<'_, AppState>, patch: AppConfigPatch) -> AppResult<Ap
         }
     }
 
+    if let Some(tun) = patch.tun {
+        if let Some(name) = tun.name {
+            config.tun.name = normalize_optional(name);
+        }
+        if let Some(addr) = tun.addr {
+            let addr = addr.trim().to_string();
+            if addr.is_empty() {
+                return Err(AppError::invalid_argument("tun.addr must not be empty"));
+            }
+            config.tun.addr = addr;
+        }
+        if let Some(tag) = tun.tag {
+            let tag = tag.trim().to_string();
+            if tag.is_empty() {
+                return Err(AppError::invalid_argument("tun.tag must not be empty"));
+            }
+            config.tun.tag = tag;
+        }
+        if let Some(mtu) = tun.mtu {
+            if mtu == 0 {
+                return Err(AppError::invalid_argument("tun.mtu must be greater than 0"));
+            }
+            config.tun.mtu = mtu;
+        }
+    }
+
     app_config_store::save(&app_config_store::default_config_path()?, &config)?;
 
-    eprintln!(
-        "[ZNet] app_config_update: took {:?}",
-        start.elapsed(),
-    );
+    eprintln!("[ZNet] app_config_update: took {:?}", start.elapsed(),);
 
     Ok(config.clone())
 }
