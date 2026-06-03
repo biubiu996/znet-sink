@@ -274,65 +274,6 @@
         </div>
       </div>
 
-      <KernelVersionCard />
-    </div>
-
-    <!-- Self-test -->
-    <div class="overview-card flex-shrink-0">
-      <button class="flex items-center justify-between w-full cursor-pointer" onclick={() => testExpanded = !testExpanded} style="background: none; border: none; padding: 0; color: inherit;">
-        <span class="card-label">系统自测</span>
-        <div class="flex items-center gap-2">
-          {#if guiState.selfTest}
-            {#if guiState.selfTest.ready}
-              <span class="inline-flex items-center gap-1 text-success" style="font-size: 12px; font-weight: 600;">
-                <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="1.5 5 4 7.5 8.5 2.5"/></svg>
-                就绪
-              </span>
-            {:else}
-              <span class="inline-flex items-center gap-1 text-destructive" style="font-size: 12px; font-weight: 600;">
-                <svg width="12" height="12" viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="2" y1="2" x2="8" y2="8"/><line x1="8" y1="2" x2="2" y2="8"/></svg>
-                未就绪
-              </span>
-            {/if}
-            {#if guiState.selfTest.warningCount > 0}
-              <span class="text-warning" style="font-size: 11px;">{guiState.selfTest.warningCount} 警告</span>
-            {/if}
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" class="expand-chevron" class:expanded={testExpanded}>
-              <polyline points="3 5 7 9 11 5"/>
-            </svg>
-          {:else}
-            <span style="font-size: 11px; color: var(--muted-foreground);">检测中…</span>
-          {/if}
-        </div>
-      </button>
-      {#if guiState.selfTest?.blockingIssues?.length}
-        <div class="mt-2 space-y-0.5">
-          {#each guiState.selfTest.blockingIssues as issue}
-            <div class="text-destructive" style="font-size: 12px;">• {issue}</div>
-          {/each}
-        </div>
-      {/if}
-      {#if testExpanded && guiState.selfTest?.checks?.length}
-        <div class="test-checks">
-          {#each guiState.selfTest.checks as check}
-            <div class="test-check-row">
-              {#if check.status === 'pass'}
-                <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="#22C55E" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" class="flex-shrink-0 mt-0.5"><polyline points="1.5 5 4 7.5 8.5 2.5"/></svg>
-              {:else if check.status === 'warn'}
-                <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="#F59E0B" stroke-width="1.6" stroke-linecap="round" class="flex-shrink-0 mt-0.5"><path d="M5 1.2L9 8.8H1Z"/><line x1="5" y1="4" x2="5" y2="6"/><circle cx="5" cy="7.5" r="0.4" fill="#F59E0B"/></svg>
-              {:else}
-                <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="#EF4444" stroke-width="1.6" stroke-linecap="round" class="flex-shrink-0 mt-0.5"><line x1="2" y1="2" x2="8" y2="8"/><line x1="8" y1="2" x2="2" y2="8"/></svg>
-              {/if}
-              <div class="test-check-info">
-                <span class="test-check-name">{check.key}</span>
-                {#if check.message}
-                  <span class="test-check-msg">{check.message}</span>
-                {/if}
-              </div>
-            </div>
-          {/each}
-        </div>
-      {/if}
     </div>
 
     <div class="overview-card flex-shrink-0">

@@ -80,14 +80,14 @@ pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<Cor
         Ok(mut child) => {
             let pid = child.id();
             let stderr = child.stderr.take().unwrap();
-            let app_handle_clone = app_handle.clone();
 
+            let app_handle_stderr = app_handle.clone();
             let stderr_handle = std::thread::spawn(move || {
                 let reader = BufReader::new(stderr);
                 for line in reader.lines() {
                     if let Ok(line) = line {
                         if !line.trim().is_empty() {
-                            let state = app_handle_clone.state::<AppState>();
+                            let state = app_handle_stderr.state::<AppState>();
                             let _ = logs::append_entry(
                                 &state,
                                 LogSource::Core,
@@ -104,11 +104,11 @@ pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<Cor
             process.status = CoreProcessStatus {
                 state: CoreProcessState::Running,
                 pid: Some(pid),
-                kernel: snapshot.kernel,
-                executable_path: snapshot.executable_path,
-                working_dir: snapshot.working_dir,
-                config_path: snapshot.config_path,
-                endpoint_path: snapshot.endpoint.path,
+                kernel: snapshot.kernel.clone(),
+                executable_path: snapshot.executable_path.clone(),
+                working_dir: snapshot.working_dir.clone(),
+                config_path: snapshot.config_path.clone(),
+                endpoint_path: snapshot.endpoint.path.clone(),
                 started_at_unix_ms: Some(crate::services::common::now_unix_ms()),
                 exited_at_unix_ms: None,
                 exit_code: None,
@@ -117,6 +117,38 @@ pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<Cor
             };
             process.child = Some(child);
             process.stderr_handle = Some(stderr_handle);
+
+            // Monitor thread: poll child process exit so UI updates in real time
+            let app_handle_mon = app_handle.clone();
+            std::thread::spawn(move || {
+                let state = app_handle_mon.state::<AppState>();
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let mut process = match lock(state.core_process(), "core_process") {
+                        Ok(p) => p,
+                        Err(_) => break,
+                    };
+                    let exited = if let Some(ref mut child) = process.child {
+                        matches!(child.try_wait(), Ok(Some(_)))
+                    } else {
+                        true // child already removed
+                    };
+                    if exited {
+                        let code = process.status.exit_code;
+                        let reason = if code == Some(0) { CoreProcessExitReason::Exited } else { CoreProcessExitReason::Crashed };
+                        let reason_str = if code == Some(0) { "exited" } else { "crashed" };
+                        process.status.state = CoreProcessState::Exited;
+                        process.status.exit_reason = Some(reason);
+                        process.status.exited_at_unix_ms =
+                            Some(crate::services::common::now_unix_ms());
+                        process.child = None;
+                        drop(process);
+                        let msg = format!("core process {} (code={})", reason_str, code.unwrap_or(-1));
+                        let _ = logs::append_entry(&state, LogSource::App, LogLevel::Warn, msg, None);
+                        break;
+                    }
+                }
+            });
 
             logs::append_entry(
                 state.inner(),

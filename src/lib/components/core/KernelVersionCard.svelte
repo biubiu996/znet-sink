@@ -8,7 +8,15 @@
   let latestStable = $state<KernelRelease | null>(null);
   let updateAvailable = $state(false);
   let checking = $state(false);
+  let error = $state<string | null>(null);
   let mounted = $state(false);
+
+  /** Ensure we never render an object as text. */
+  function safeStr(v: unknown): string {
+    if (typeof v === 'string') return v;
+    if (v && typeof v === 'object') return JSON.stringify(v);
+    return String(v ?? '');
+  }
 
   /** Strip leading 'v' so all version comparisons are prefix-free. */
   function stripV(v: string): string {
@@ -20,25 +28,29 @@
 
   async function checkVersion() {
     checking = true;
+    error = null;
     try {
-      // Detect current installed version
       const detect = await detectKernelVersion();
       currentVersion = detect.version ? stripV(detect.version) : null;
+    } catch (e) {
+      error = `版本检测失败: ${e instanceof Error ? e.message : String(e)}`;
+      currentVersion = null;
+    }
 
-      // Also check running version (may be newer)
-      try {
-        const health = await getGuiCoreHealth();
-        if (health.engineVersion) {
-          currentVersion = stripV(health.engineVersion);
-        }
-      } catch { /* health API may be unavailable if core not running */ }
+    // Running version from health API
+    try {
+      const health = await getGuiCoreHealth();
+      if (health.engineVersion) {
+        currentVersion = stripV(health.engineVersion);
+      }
+    } catch { /* health API may be unavailable if core not running */ }
 
-      // Fetch latest stable from GitHub
+    // Fetch latest stable from GitHub
+    try {
       const list = await listKernelVersions();
       const stable = list.versions
         .filter(v => v.channel === 'stable')
         .sort((a, b) => (b.publishedAtUnixMs ?? 0) - (a.publishedAtUnixMs ?? 0));
-
       if (stable.length > 0) {
         const top = stable[0];
         latestStable = top;
@@ -80,7 +92,9 @@
     {/if}
   </div>
 
-  {#if hasVersion}
+  {#if error}
+    <div class="kernel-error" title={error}>{error}</div>
+  {:else if hasVersion}
     <div class="kernel-meta">
       {#if updateAvailable && latestVersion}
         <div class="update-avail">
@@ -197,6 +211,15 @@
   }
 
   :global(.dark) .up-to-date { color: #4ADE80; }
+
+  .kernel-error {
+    font-size: 11px;
+    color: var(--destructive);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
 
   .kernel-link {
     align-self: flex-start;

@@ -23,11 +23,12 @@
     { value: 'trace', label: 'TRC' },
   ];
 
+  // 后端返回时间升序（旧→新），反转后最新在最上面
   const filteredLogs = $derived(logs.filter(log => {
     if (selectedSource !== 'all' && log.source !== selectedSource) return false;
     if (selectedLevel !== 'all' && log.level !== selectedLevel) return false;
     return true;
-  }));
+  }).reverse());
 
   async function refreshLogs() {
     try {
@@ -52,7 +53,9 @@
   }
 
   function formatTime(ms: number): string {
-    return new Date(ms).toLocaleTimeString('zh-CN', { hour12: false });
+    const d = new Date(ms);
+    return d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+      + ' ' + d.toLocaleTimeString('zh-CN', { hour12: false });
   }
 
   let _lastLogTick = -1;
@@ -167,7 +170,15 @@
       <div class="log-empty">暂无日志</div>
     {:else}
       {#each filteredLogs as log, index (`${log.id}-${log.occurredAtUnixMs}-${index}`)}
-        <div class="log-row">
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="log-row"
+          role="button"
+          tabindex="0"
+          title={`${formatTime(log.occurredAtUnixMs)} [${log.source.toUpperCase()}] ${log.message}`}
+          onclick={() => { navigator.clipboard.writeText(`[${formatTime(log.occurredAtUnixMs)}] [${log.source.toUpperCase()}] [${log.level.toUpperCase()}] ${log.message}`); }}
+          onkeydown={(e) => { if (e.key === 'Enter') { navigator.clipboard.writeText(`[${formatTime(log.occurredAtUnixMs)}] [${log.source.toUpperCase()}] [${log.level.toUpperCase()}] ${log.message}`); } }}
+        >
           <span class="log-time">{formatTime(log.occurredAtUnixMs)}</span>
           <span class="log-src" class:app={log.source === 'app'} class:core={log.source === 'core'}>
             {log.source.toUpperCase()}
@@ -335,6 +346,8 @@
     line-height: 1.6;
     border-radius: 3px;
     transition: background 0.1s ease;
+    user-select: text;
+    cursor: pointer;
   }
 
   .log-row:hover {

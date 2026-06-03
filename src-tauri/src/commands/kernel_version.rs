@@ -7,9 +7,8 @@ use crate::services::{common, interaction_mode, kernel_manager};
 use crate::state::app_state::AppState;
 
 #[tauri::command]
-pub async fn kernel_list_versions(state: State<'_, AppState>) -> AppResult<KernelVersionList> {
-    interaction_mode::require_pro_mode(state.inner(), "coreConfig")?;
-    // Network I/O — must run on blocking thread to avoid freezing UI
+pub async fn kernel_list_versions(_state: State<'_, AppState>) -> AppResult<KernelVersionList> {
+    // Read-only — available in both lite and pro mode
     tauri::async_runtime::spawn_blocking(|| kernel_manager::list_available_versions())
         .await
         .map_err(|e| crate::errors::AppError::internal(format!("version list thread panicked: {e}")))?
@@ -34,7 +33,7 @@ pub async fn kernel_install_version(
 
 #[tauri::command]
 pub async fn kernel_detect_version(state: State<'_, AppState>) -> AppResult<KernelVersionDetect> {
-    interaction_mode::require_pro_mode(state.inner(), "coreConfig")?;
+    // Read-only — available in both lite and pro mode
     let config: AppCoreConfig = {
         common::lock(state.app_config(), "app_config")?.core.clone()
     };

@@ -7,7 +7,7 @@ use crate::state::app_state::AppState;
 
 #[tauri::command]
 pub fn core_config_get(state: State<'_, AppState>) -> AppResult<CoreKernelInfo> {
-    interaction_mode::require_pro_mode(state.inner(), "coreConfig")?;
+    // Read-only kernel inspection — available in both lite and pro mode
     core_config::inspect(state)
 }
 
