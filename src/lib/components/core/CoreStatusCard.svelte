@@ -117,11 +117,11 @@
   }
 
   $effect(() => {
-    if (prevIsRunning && !isRunning && isCrashed) {
-      toastError('内核崩溃，请查看运行日志获取详情');
-      handleCoreStopped(true);
-    } else if (prevIsRunning && !isRunning && isStopped) {
-      handleCoreStopped(false);
+    if (prevIsRunning && !isRunning) {
+      if (isCrashed) {
+        toastError('内核崩溃，请查看运行日志获取详情');
+      }
+      handleCoreStopped(isCrashed);
     }
     prevIsRunning = isRunning;
   });

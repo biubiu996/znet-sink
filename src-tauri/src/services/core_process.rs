@@ -144,15 +144,26 @@ pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<Cor
                         Ok(p) => p,
                         Err(_) => break,
                     };
-                    let exited = if let Some(ref mut child) = process.child {
-                        matches!(child.try_wait(), Ok(Some(_)))
+                    let exited_info = if let Some(ref mut child) = process.child {
+                        match child.try_wait() {
+                            Ok(Some(es)) => Some(es),
+                            _ => None,
+                        }
                     } else {
-                        true // child already removed
+                        // child already removed — synthesize an exit status so we still clean up
+                        None
                     };
-                    if exited {
-                        let code = process.status.exit_code;
-                        let reason = if code == Some(0) { CoreProcessExitReason::Exited } else { CoreProcessExitReason::Crashed };
-                        let reason_str = if code == Some(0) { "exited" } else { "crashed" };
+                    if exited_info.is_some() || process.child.is_none() {
+                        let code = exited_info.as_ref().and_then(|es| es.code());
+                        // code == None ⇒ killed by signal (Unix) → crashed
+                        // code == Some(_) ⇒ normal exit (any code, including 1) → exited
+                        let reason = if code.is_none() {
+                            CoreProcessExitReason::Crashed
+                        } else {
+                            CoreProcessExitReason::Exited
+                        };
+                        let reason_str = if code.is_none() { "crashed" } else { "exited" };
+                        process.status.exit_code = code;
                         process.status.state = CoreProcessState::Exited;
                         process.status.exit_reason = Some(reason);
                         process.status.exited_at_unix_ms =
@@ -285,10 +296,12 @@ fn refresh_locked_status(
             process.status.exit_code = status.code();
             // Only set exit_reason if not already set by stop()
             if process.status.exit_reason.is_none() {
-                process.status.exit_reason = if status.success() {
-                    Some(CoreProcessExitReason::Exited)
-                } else {
+                // code == None ⇒ killed by signal (Unix) → crashed
+                // code == Some(_) ⇒ normal exit (any code) → exited
+                process.status.exit_reason = if status.code().is_none() {
                     Some(CoreProcessExitReason::Crashed)
+                } else {
+                    Some(CoreProcessExitReason::Exited)
                 };
             }
             process.status.exited_at_unix_ms = Some(crate::services::common::now_unix_ms());
