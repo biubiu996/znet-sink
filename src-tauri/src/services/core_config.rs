@@ -50,7 +50,9 @@ pub fn export_active(state: State<'_, AppState>) -> AppResult<CoreConfigExportRe
     }
 
     let path = default_export_path()?;
-    write_core_config(&path, content)?;
+    // Strip GUI-only fields the core engine doesn't understand
+    let export_content = strip_gui_only_fields(content);
+    write_core_config(&path, &export_content)?;
 
     let snapshot = {
         let mut app_config = lock(state.app_config(), "app_config")?;
@@ -374,4 +376,17 @@ pub fn download_latest(install_dir: Option<String>) -> AppResult<CoreDownloadRes
         version,
         message,
     })
+}
+
+/// Remove GUI-only fields that the core engine does not understand.
+/// Currently strips: top-level `mode`, `route.mode`.
+fn strip_gui_only_fields(content: &serde_json::Value) -> serde_json::Value {
+    let mut cleaned = content.clone();
+    if let Some(obj) = cleaned.as_object_mut() {
+        obj.remove("mode");
+        if let Some(route) = obj.get_mut("route").and_then(|r| r.as_object_mut()) {
+            route.remove("mode");
+        }
+    }
+    cleaned
 }

@@ -104,10 +104,11 @@ pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<Cor
                         let cleaned = strip_ansi(&line);
                         if !cleaned.trim().is_empty() {
                             let state = app_handle_stderr.state::<AppState>();
+                            let level = classify_stderr_level(&cleaned);
                             let _ = logs::append_entry(
                                 &state,
                                 LogSource::Core,
-                                LogLevel::Error,
+                                level,
                                 cleaned,
                                 None,
                             );
@@ -383,4 +384,16 @@ fn strip_ansi(raw: &str) -> String {
         }
     }
     result
+}
+
+/// Classify a core stderr line into a log level based on content heuristics.
+fn classify_stderr_level(line: &str) -> LogLevel {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("error") || lower.contains("fatal") || lower.contains("panic") {
+        LogLevel::Error
+    } else if lower.contains("warn") {
+        LogLevel::Warn
+    } else {
+        LogLevel::Info
+    }
 }
