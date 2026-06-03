@@ -30,6 +30,7 @@
       "endpoints": [
         "https://github.com/zerodenet/znet-sink/releases/latest/download/latest.json"
       ],
+      "pubkey": "",
       "windows": {
         "installMode": "passive"
       }
