@@ -9,21 +9,15 @@
   let snapshot = $state<CoreKernelInfo | null>(null);
   let loading = $state(false);
   let prevIsRunning = $state(false);
-  let retryCount = $state(0);
-  let retryTimer = $state<number | null>(null);
-
-  const MAX_AUTO_RETRY = 3;
-  const RETRY_DELAY_MS = 2000;
 
   const isRunning  = $derived(status?.state === 'running');
   const isStarting = $derived(status?.state === 'starting');
   const isStopped  = $derived(status?.exitReason === 'stopped');
   const isCrashed  = $derived(status?.exitReason === 'crashed');
   const hasFailed  = $derived(status?.state === 'failed');
-  const isRetrying = $derived(retryTimer !== null);
 
   const canStart = $derived(
-    !isRunning && !isStarting && !isRetrying &&
+    !isRunning && !isStarting &&
     !(snapshot?.warnings.length) &&
     snapshot?.hasActiveConfig !== false
   );
@@ -32,7 +26,6 @@
     loading     ? '处理中…'  :
     isRunning   ? '运行中'   :
     isStarting  ? '启动中'   :
-    isRetrying  ? `重试 ${retryCount}/${MAX_AUTO_RETRY}` :
     hasFailed   ? '启动失败' :
     isCrashed   ? '异常退出' :
     '已停止'
@@ -45,7 +38,7 @@
     'var(--muted-foreground)'
   );
 
-  const dotPulse = $derived(isStarting || isRetrying);
+  const dotPulse = $derived(isStarting);
 
   async function refreshStatus() {
     try {
@@ -63,15 +56,8 @@
     }
   }
 
-  function cancelRetry() {
-    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-    retryCount = 0;
-    info('已取消自动重试');
-  }
-
   async function toggleCore() {
     if (loading) return;
-    if (isRetrying) { cancelRetry(); return; }
 
     loading = true;
     try {
@@ -121,44 +107,14 @@
     }
   }
 
-  async function tryRestartCore() {
-    if (retryCount >= MAX_AUTO_RETRY) {
-      toastError(`内核连续崩溃 ${MAX_AUTO_RETRY} 次，已停止自动重试`);
-      retryCount = 0; retryTimer = null; return;
-    }
-    retryCount++;
-    info(`内核崩溃，自动重试 (${retryCount}/${MAX_AUTO_RETRY})…`);
-    try {
-      await startCoreProcess();
-      success('内核自动重启成功');
-      retryCount = 0; retryTimer = null;
-      await refreshStatus();
-    } catch (e: any) {
-      toastError(`重试失败: ${e.message ?? e}`);
-      retryTimer = window.setTimeout(tryRestartCore, RETRY_DELAY_MS);
-    }
-  }
-
   $effect(() => {
-    if (prevIsRunning && !isRunning) {
-      if (isCrashed) {
-        toastError('内核崩溃，请查看运行日志获取详情');
-        handleCoreStopped(true);
-        retryTimer = window.setTimeout(tryRestartCore, RETRY_DELAY_MS);
-      } else if (isStopped) {
-        handleCoreStopped(false);
-        retryCount = 0;
-      }
-    }
-    if (isRunning) {
-      retryCount = 0;
-      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    if (prevIsRunning && !isRunning && isCrashed) {
+      toastError('内核崩溃，请查看运行日志获取详情');
+      handleCoreStopped(true);
+    } else if (prevIsRunning && !isRunning && isStopped) {
+      handleCoreStopped(false);
     }
     prevIsRunning = isRunning;
-  });
-
-  $effect(() => {
-    return () => { if (retryTimer) clearTimeout(retryTimer); };
   });
 </script>
 
@@ -228,7 +184,7 @@
     class:startable={canStart && !isRunning}
     title={!canStart && snapshot?.warnings.length ? snapshot.warnings.join('; ') : ''}
   >
-    {loading ? '处理中…' : isRunning ? '停止内核' : isRetrying ? '取消重试' : canStart ? '启动内核' : '配置不完整'}
+    {loading ? '处理中…' : isRunning ? '停止内核' : canStart ? '启动内核' : '配置不完整'}
   </button>
 </div>
 
