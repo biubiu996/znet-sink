@@ -202,11 +202,11 @@
       }
 
       await refresh();
+      saving = false;
       closeEditor();
     } catch (error) {
-      handleAppError(error, '保存代理配置失败');
-    } finally {
       saving = false;
+      handleAppError(error, '保存代理配置失败');
     }
   }
 
