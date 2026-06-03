@@ -8,15 +8,33 @@
   import TunStackStatus from '$lib/components/core/TunStackStatus.svelte';
   import LogPanel from '$lib/components/core/LogPanel.svelte';
   import { Badge } from '$lib/components/ui/badge';
+  import {
+    selectPolicy, probePolicy,
+    enableSystemProxy, disableSystemProxy,
+    getSystemProxyStatus, getGuiTunStatus, getGuiProxyModeStatus,
+  } from '$lib/services/core';
+  import type { GuiFeatureStatus } from '$lib/types/gui-api';
 
   function formatUptime(ms?: number): string {
-    if (!ms) return '-';
+    if (!ms) return '—';
     const seconds = Math.floor(ms / 1000);
     const minutes = Math.floor(seconds / 60);
     const hours = Math.floor(minutes / 60);
     if (hours > 0) return `${hours}h ${minutes % 60}m`;
     if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
     return `${seconds}s`;
+  }
+
+  function formatTraffic(mb: number): string {
+    if (mb >= 1000) return `${(mb / 1000).toFixed(1)} GB`;
+    if (mb >= 1) return `${mb.toFixed(1)} MB`;
+    return `${(mb * 1000).toFixed(0)} KB`;
+  }
+
+  function formatSpeed(speed: number): string {
+    if (speed >= 1) return `${speed.toFixed(2)} MB/s`;
+    if (speed * 1000 >= 1) return `${(speed * 1000).toFixed(0)} KB/s`;
+    return '0 KB/s';
   }
 
   let testExpanded = $state(false);
@@ -26,6 +44,125 @@
     { value: 'rule',   label: '规则' },
     { value: 'direct', label: '直连' },
   ] as const;
+
+  // ── Lite mode state ──
+  let nodeDropdownOpen = $state(false);
+  let nodeSwitching = $state<string | null>(null);
+  let proxyEnabled = $state(false);
+  let tunStatus = $state<GuiFeatureStatus | null>(null);
+  let switchingProxy = $state(false);
+  let switchingTun = $state(false);
+
+  // Speed derived from history
+  const currentDown = $derived(
+    overviewData.speedHistory.length > 0
+      ? overviewData.speedHistory[overviewData.speedHistory.length - 1].down
+      : 0,
+  );
+  const currentUp = $derived(
+    overviewData.speedHistory.length > 0
+      ? overviewData.speedHistory[overviewData.speedHistory.length - 1].up
+      : 0,
+  );
+
+  const isConnected = $derived(guiState.connection?.state === 'connected');
+  const isConnecting = $derived(guiState.isConnecting);
+  const isDirectMode = $derived(guiState.proxyMode?.currentMode === 'direct');
+
+  // Current node for display
+  const activeNodeName = $derived.by(() => {
+    const groups = guiState.policyGroups;
+    if (groups.length === 0) {
+      const nodes = overviewData.proxyNodes;
+      const sel = nodes.find(n => n.domain === 'selected');
+      return sel?.name ?? nodes[0]?.name ?? null;
+    }
+    for (const g of groups) {
+      if (g.selected) return g.selected;
+    }
+    return null;
+  });
+
+  // Flat node list from policy groups for dropdown
+  const dropdownGroups = $derived.by(() => {
+    const groups = guiState.policyGroups;
+    if (groups.length > 0) {
+      return groups.map(g => ({
+        name: g.name,
+        selected: g.selected,
+        nodes: g.outbounds.map(o => ({ tag: o.tag, type: o.type })),
+      }));
+    }
+    // Fallback: flat list from overviewData
+    return [{
+      name: '节点',
+      selected: overviewData.proxyNodes.find(n => n.domain === 'selected')?.name ?? null,
+      nodes: overviewData.proxyNodes.map(n => ({ tag: n.name, type: n.protocol })),
+    }];
+  });
+
+  // Close dropdown on outside click
+  let dropdownRef: HTMLDivElement | undefined = $state();
+
+  function closeDropdown(e: MouseEvent) {
+    if (dropdownRef && !dropdownRef.contains(e.target as Node)) {
+      nodeDropdownOpen = false;
+    }
+  }
+
+  $effect(() => {
+    if (nodeDropdownOpen) {
+      document.addEventListener('click', closeDropdown, true);
+    } else {
+      document.removeEventListener('click', closeDropdown, true);
+    }
+    return () => document.removeEventListener('click', closeDropdown, true);
+  });
+
+  async function handleNodeSelect(groupName: string, tag: string) {
+    if (nodeSwitching) return;
+    nodeSwitching = tag;
+    try {
+      await selectPolicy(groupName, tag);
+    } catch { /* non-blocking */ }
+    nodeSwitching = null;
+    nodeDropdownOpen = false;
+  }
+
+  // Refresh proxy/tun state
+  async function refreshProxyState() {
+    try {
+      const s = await getSystemProxyStatus();
+      proxyEnabled = s.enabled;
+    } catch { proxyEnabled = false; }
+    try {
+      tunStatus = await getGuiTunStatus();
+    } catch { tunStatus = null; }
+  }
+
+  $effect(() => {
+    if (guiState.connection !== null) refreshProxyState();
+  });
+
+  async function toggleSystemProxy() {
+    if (switchingProxy) return;
+    switchingProxy = true;
+    try {
+      if (proxyEnabled) { await disableSystemProxy(); proxyEnabled = false; }
+      else { await enableSystemProxy(); proxyEnabled = true; }
+    } catch { /* keep state */ }
+    switchingProxy = false;
+  }
+
+  async function toggleDirect() {
+    try {
+      if (isDirectMode) {
+        await guiState.setProxyMode('rule');
+      } else {
+        await guiState.setProxyMode('direct');
+      }
+    } catch { /* non-blocking */ }
+  }
 </script>
 
 {#if store.uiMode === 'pro'}
@@ -213,96 +350,162 @@
 
 {:else}
   <!-- ============ LITE MODE ============ -->
-  <div class="flex-1 w-full flex flex-col gap-3 overflow-y-auto overflow-x-hidden animate-fade-in min-h-0 pr-0.5">
+  <div class="lite-root animate-fade-in">
 
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 flex-shrink-0">
-      <CoreStatusCard />
+    <!-- Node selector dropdown -->
+    <div class="lite-node-wrap" bind:this={dropdownRef}>
+      <button class="lite-node-trigger" onclick={() => nodeDropdownOpen = !nodeDropdownOpen}>
+        <svg width="13" height="13" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" class="lite-node-icon">
+          <circle cx="5" cy="5" r="3"/><line x1="5" y1="0" x2="5" y2="1.2"/><line x1="5" y1="8.8" x2="5" y2="10"/><line x1="0" y1="5" x2="1.2" y2="5"/><line x1="8.8" y1="5" x2="10" y2="5"/>
+        </svg>
+        <span class="lite-node-current">
+          {activeNodeName ?? '暂无节点'}
+        </span>
+        <svg class="lite-chevron" class:open={nodeDropdownOpen} width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="3 4.5 6 7.5 9 4.5"/></svg>
+      </button>
 
-      <!-- Connection -->
-      <div class="overview-card flex flex-col gap-2" style="min-height: 96px;">
-        <div class="flex items-center justify-between flex-shrink-0">
-          <span class="card-label">连接状态</span>
-          {#if guiState.connection?.state === 'connected'}
-            <span class="status-chip active">已连接</span>
-          {:else}
-            <span class="status-chip">未连接</span>
+      {#if nodeDropdownOpen}
+        <div class="lite-node-dropdown">
+          {#each dropdownGroups as group}
+            <div class="lite-ngroup">
+              <div class="lite-ngroup-label">{group.name}</div>
+              {#each group.nodes as node}
+                <button
+                  class="lite-nitem {group.selected === node.tag ? 'active' : ''}"
+                  onclick={() => handleNodeSelect(group.name, node.tag)}
+                  disabled={nodeSwitching !== null}
+                >
+                  <span class="lite-nitem-dot {group.selected === node.tag ? 'on' : ''}"></span>
+                  <span class="lite-nitem-name">{node.tag}</span>
+                  <span class="lite-nitem-type">{node.type}</span>
+                  {#if nodeSwitching === node.tag}
+                    <span class="lite-nitem-spin">⟳</span>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+          {/each}
+          {#if dropdownGroups.length === 0 || (dropdownGroups.length === 1 && dropdownGroups[0].nodes.length === 0)}
+            <div class="lite-node-empty">暂无节点数据</div>
           {/if}
+          <button class="lite-node-manage" onclick={() => { nodeDropdownOpen = false; store.activeTab = 'nodes'; }}>
+            管理节点 →
+          </button>
         </div>
-        <div class="mt-auto flex justify-center">
-          {#if guiState.connection?.state === 'connected'}
-            <button
-              onclick={guiState.disconnect}
-              disabled={!guiState.canDisconnect || guiState.isDisconnecting}
-              class="disconnect-btn"
-            >
-              {guiState.isDisconnecting ? '断开中…' : '断开连接'}
-            </button>
-          {:else}
-            <button
-              onclick={guiState.connect}
-              disabled={!guiState.canConnect || guiState.isConnecting}
-              class="connect-btn"
-            >
-              {guiState.isConnecting ? '连接中…' : '一键连接'}
-            </button>
-          {/if}
-        </div>
-      </div>
-
-      <!-- Proxy mode -->
-      <div class="overview-card flex flex-col gap-2" style="min-height: 96px;">
-        <div class="flex items-center justify-between flex-shrink-0">
-          <span class="card-label">代理模式</span>
-          {#if guiState.proxyMode?.currentMode}
-            <span class="mode-indicator">{guiState.proxyMode.currentMode === 'global' ? '全局' : guiState.proxyMode.currentMode === 'rule' ? '规则' : '直连'}</span>
-          {/if}
-        </div>
-        <div class="mt-auto">
-          <div class="proxy-segment" role="radiogroup" aria-label="选择代理模式">
-            {#each PROXY_MODES as mode}
-              <button
-                role="radio"
-                onclick={() => guiState.setProxyMode(mode.value as any)}
-                disabled={guiState.isSwitchingMode}
-                class="proxy-seg-btn {guiState.proxyMode?.currentMode === mode.value ? 'active' : ''}"
-                aria-checked={guiState.proxyMode?.currentMode === mode.value}
-              >
-                {mode.label}
-              </button>
-            {/each}
-          </div>
-        </div>
-      </div>
-
+      {/if}
     </div>
 
-    <div class="overview-card flex-shrink-0">
-      <div class="flex items-center justify-between">
-        <span class="card-label">当前节点</span>
-        <button
-          class="node-link-btn"
-          onclick={() => store.activeTab = 'nodes'}
-          aria-label="管理节点"
-        >
-          管理
-        </button>
-      </div>
-      {#if overviewData.proxyNodes.length > 0}
-        {@const activeNode = overviewData.proxyNodes.find(n => n.domain === 'selected') ?? overviewData.proxyNodes[0]}
-        <div class="flex items-center gap-2 mt-2">
-          <span class="active-node-name truncate">{activeNode.name}</span>
-          <span class="active-node-meta">{activeNode.protocol} · {activeNode.delay > 0 ? `${activeNode.delay} ms` : '—'}</span>
+    <!-- Main row: stats | button | mode switches -->
+    <div class="lite-main">
+
+      <!-- Left: connection stats -->
+      <div class="lite-stats">
+        <div class="lite-stat-row">
+          <span class="lite-stat-label">在线</span>
+          <span class="lite-stat-val">{formatUptime(guiState.connection?.uptimeMs)}</span>
         </div>
-      {:else}
-        <div class="mt-2 text-xs text-muted-foreground">等待节点数据…</div>
-      {/if}
+        <div class="lite-stat-row">
+          <span class="lite-stat-label">↓ 总计</span>
+          <span class="lite-stat-val down">{formatTraffic(overviewData.totalDownMB)}</span>
+        </div>
+        <div class="lite-stat-row">
+          <span class="lite-stat-label">↑ 总计</span>
+          <span class="lite-stat-val up">{formatTraffic(overviewData.totalUpMB)}</span>
+        </div>
+        <div class="lite-stat-row">
+          <span class="lite-stat-label">连接</span>
+          <span class="lite-stat-val">{overviewData.activeConnections}</span>
+        </div>
+      </div>
+
+      <!-- Center: big power button -->
+      <button
+        class="lite-power"
+        class:on={isConnected}
+        class:connecting={isConnecting}
+        onclick={() => isConnected ? guiState.disconnect() : guiState.connect()}
+        disabled={isConnecting || guiState.isDisconnecting || (!isConnected && !guiState.canConnect)}
+        aria-label={isConnected ? '断开连接' : '连接'}
+      >
+        {#if isConnecting || guiState.isDisconnecting}
+          <span class="lite-power-spin">⟳</span>
+        {:else if isConnected}
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+            <line x1="12" y1="2" x2="12" y2="12"/>
+          </svg>
+        {:else}
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+            <line x1="12" y1="2" x2="12" y2="12"/>
+          </svg>
+        {/if}
+        <span class="lite-power-label">
+          {isConnecting ? '连接中' : guiState.isDisconnecting ? '断开中' : isConnected ? '已连接' : '连接'}
+        </span>
+      </button>
+
+      <!-- Right: mode switches -->
+      <div class="lite-modes">
+        <div class="lite-mode-row">
+          <span class="lite-mode-label">系统代理</span>
+          <button
+            class="lite-toggle {proxyEnabled ? 'on' : ''}"
+            onclick={toggleSystemProxy}
+            disabled={switchingProxy}
+            aria-label="切换系统代理"
+          >
+            <span class="lite-toggle-thumb"></span>
+          </button>
+        </div>
+        <div class="lite-mode-row">
+          <span class="lite-mode-label">TUN</span>
+          <button
+            class="lite-toggle {tunStatus?.enabled ? 'on' : ''}"
+            disabled
+            title="TUN 功能开发中"
+            aria-label="TUN 模式开关（开发中）"
+          >
+            <span class="lite-toggle-thumb"></span>
+          </button>
+        </div>
+        <div class="lite-mode-row">
+          <span class="lite-mode-label">直连</span>
+          <button
+            class="lite-toggle {isDirectMode ? 'on' : ''}"
+            onclick={toggleDirect}
+            disabled={guiState.isSwitchingMode}
+            aria-label="切换直连模式"
+          >
+            <span class="lite-toggle-thumb"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Speed bar -->
+    <div class="lite-speed-bar">
+      <div class="lite-speed-item down">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 5 6 9 10 5"/></svg>
+        <span class="lite-speed-val">{formatSpeed(currentDown)}</span>
+      </div>
+      <div class="lite-speed-item up">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 7 6 3 10 7"/></svg>
+        <span class="lite-speed-val">{formatSpeed(currentUp)}</span>
+      </div>
+    </div>
+
+    <!-- Traffic chart -->
+    <div class="lite-chart">
+      <TrafficChart history={overviewData.speedHistory} />
     </div>
 
   </div>
 {/if}
 
 <style>
-  /* ---- Card base ---- */
+  /* ─────────────── Shared (Pro) ─────────────── */
+
   .overview-card {
     background: var(--card);
     border: 1px solid var(--border);
@@ -317,274 +520,404 @@
     transform: translateY(-0.5px);
   }
 
-  :global(.dark) .overview-card {
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
-  }
+  :global(.dark) .overview-card { box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22); }
+  :global(.dark) .overview-card:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32); }
 
-  :global(.dark) .overview-card:hover {
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
-  }
+  .card-label { font-size: 12px; font-weight: 500; color: var(--muted-foreground); letter-spacing: 0.01em; }
 
-  .card-label {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--muted-foreground);
-    letter-spacing: 0.01em;
-  }
-
-  /* ---- Status chip ---- */
   .status-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 3px 7px;
-    border-radius: 4px;
-    background: var(--muted);
-    color: var(--muted-foreground);
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 600; padding: 3px 7px; border-radius: 4px;
+    background: var(--muted); color: var(--muted-foreground);
   }
+  .status-chip.active { background: rgba(34, 197, 94, 0.1); color: #16A34A; }
+  :global(.dark) .status-chip.active { background: rgba(74, 222, 128, 0.12); color: #4ADE80; }
 
-  .status-chip.active {
-    background: rgba(34, 197, 94, 0.1);
-    color: #16A34A;
-  }
+  .mode-indicator { font-size: 11px; font-weight: 600; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 
-  :global(.dark) .status-chip.active {
-    background: rgba(74, 222, 128, 0.12);
-    color: #4ADE80;
-  }
-
-  /* ---- Mode indicator ---- */
-  .mode-indicator {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--muted-foreground);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* ---- Connect button — compact, precise ---- */
   .connect-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: 32px;
-    min-width: 108px;
-    max-width: 180px;
-    padding: 0 18px;
-    border-radius: 8px;
-    border: none;
-    background: var(--primary);
-    color: var(--primary-foreground);
-    font-size: 12.5px;
-    font-weight: 600;
-    cursor: pointer;
-    letter-spacing: -0.01em;
+    display: inline-flex; align-items: center; justify-content: center;
+    height: 32px; min-width: 108px; max-width: 180px; padding: 0 18px;
+    border-radius: 8px; border: none; background: var(--primary); color: var(--primary-foreground);
+    font-size: 12.5px; font-weight: 600; cursor: pointer; letter-spacing: -0.01em;
     transition: opacity 0.13s ease, transform 0.13s ease, box-shadow 0.13s ease;
     white-space: nowrap;
   }
+  .connect-btn:hover:not(:disabled) { opacity: 0.88; transform: translateY(-0.5px); }
+  .connect-btn:active:not(:disabled) { opacity: 0.78; transform: translateY(0); }
+  .connect-btn:disabled { opacity: 0.38; cursor: not-allowed; }
+  :global(.dark) .connect-btn { box-shadow: 0 0 0 0.5px rgba(255,255,255,0.1), 0 2px 8px rgba(0,0,0,0.3); }
 
-  .connect-btn:hover:not(:disabled) {
-    opacity: 0.88;
-    transform: translateY(-0.5px);
-  }
-
-  .connect-btn:active:not(:disabled) {
-    opacity: 0.78;
-    transform: translateY(0);
-  }
-
-  .connect-btn:disabled {
-    opacity: 0.38;
-    cursor: not-allowed;
-  }
-
-  /* ---- Disconnect button (Lite) ---- */
-  .disconnect-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: 32px;
-    min-width: 108px;
-    max-width: 180px;
-    padding: 0 18px;
-    border-radius: 8px;
-    border: 1px solid var(--destructive, rgba(239, 68, 68, 0.4));
-    background: rgba(239, 68, 68, 0.08);
-    color: var(--destructive, #EF4444);
-    font-size: 12.5px;
-    font-weight: 600;
-    cursor: pointer;
-    letter-spacing: -0.01em;
-    transition: opacity 0.13s ease, transform 0.13s ease;
-    white-space: nowrap;
-  }
-
-  .disconnect-btn:hover:not(:disabled) {
-    opacity: 0.85;
-    transform: translateY(-0.5px);
-  }
-
-  .disconnect-btn:disabled {
-    opacity: 0.38;
-    cursor: not-allowed;
-  }
-
-  /* ---- Pro inline disconnect button ---- */
   .pro-disconnect-btn {
-    margin-left: 10px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: 24px;
-    padding: 0 10px;
-    border-radius: 5px;
-    border: 1px solid rgba(239, 68, 68, 0.3);
-    background: rgba(239, 68, 68, 0.06);
-    color: var(--destructive, #EF4444);
-    font-size: 11px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: opacity 0.13s ease;
-    white-space: nowrap;
+    margin-left: 10px; display: inline-flex; align-items: center; justify-content: center;
+    height: 24px; padding: 0 10px; border-radius: 5px;
+    border: 1px solid rgba(239,68,68,0.3); background: rgba(239,68,68,0.06);
+    color: var(--destructive, #EF4444); font-size: 11px; font-weight: 500;
+    cursor: pointer; transition: opacity 0.13s ease; white-space: nowrap;
+  }
+  .pro-disconnect-btn:hover:not(:disabled) { opacity: 0.8; }
+  .pro-disconnect-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  .proxy-segment { display: flex; align-items: center; gap: 1px; background: var(--segment-bg, rgba(0,0,0,0.055)); padding: 2px; border-radius: 7px; width: 100%; }
+  .proxy-seg-btn {
+    flex: 1; display: inline-flex; align-items: center; justify-content: center;
+    height: 24px; border-radius: 5px; border: none; background: transparent;
+    color: var(--muted-foreground); font-size: 11.5px; font-weight: 500;
+    cursor: pointer; transition: all 0.13s ease; white-space: nowrap;
+  }
+  .proxy-seg-btn:hover:not(:disabled) { color: var(--foreground); }
+  .proxy-seg-btn.active { background: var(--segment-active-bg, #fff); box-shadow: var(--segment-active-shadow, 0 1px 3px rgba(0,0,0,0.12)); color: var(--foreground); font-weight: 600; }
+  .proxy-seg-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .expand-chevron { transition: transform 0.2s ease; opacity: 0.5; flex-shrink: 0; }
+  .expand-chevron.expanded { transform: rotate(180deg); }
+
+  .test-checks { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+  .test-check-row { display: flex; align-items: flex-start; gap: 6px; font-size: 11.5px; }
+  .test-check-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .test-check-name { font-weight: 600; color: var(--foreground); }
+  .test-check-msg { color: var(--muted-foreground); font-size: 11px; line-height: 1.4; word-break: break-all; }
+
+  .node-link-btn {
+    display: inline-flex; align-items: center; height: 22px; padding: 0 9px;
+    border-radius: 5px; border: 1px solid var(--border); background: transparent;
+    color: var(--muted-foreground); font-size: 11px; font-weight: 500;
+    cursor: pointer; transition: background 0.12s ease, color 0.12s ease;
+  }
+  .node-link-btn:hover { background: var(--muted); color: var(--foreground); }
+
+  .active-node-name { font-size: 14px; font-weight: 700; color: var(--foreground); }
+  .active-node-meta { font-size: 11.5px; color: var(--muted-foreground); font-family: var(--font-mono); }
+
+  /* ─────────────── Lite mode ─────────────── */
+
+  .lite-root {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
   }
 
-  .pro-disconnect-btn:hover:not(:disabled) {
-    opacity: 0.8;
-  }
+  /* ---- Node selector ---- */
+  .lite-node-wrap { position: relative; flex-shrink: 0; }
 
-  .pro-disconnect-btn:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
-  }
-
-  :global(.dark) .connect-btn {
-    box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.1), 0 2px 8px rgba(0, 0, 0, 0.3);
-  }
-
-  /* ---- Proxy mode segmented control ---- */
-  .proxy-segment {
+  .lite-node-trigger {
+    width: 100%;
     display: flex;
     align-items: center;
-    gap: 1px;
-    background: var(--segment-bg, rgba(0, 0, 0, 0.055));
-    padding: 2px;
-    border-radius: 7px;
-    width: 100%;
-  }
-
-  .proxy-seg-btn {
-    flex: 1;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    height: 24px;
-    border-radius: 5px;
-    border: none;
-    background: transparent;
-    color: var(--muted-foreground);
-    font-size: 11.5px;
+    gap: 8px;
+    padding: 9px 12px;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--foreground);
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    transition: all 0.13s ease;
-    white-space: nowrap;
+    transition: border-color 0.13s ease, box-shadow 0.13s ease;
+  }
+  .lite-node-trigger:hover { border-color: var(--ring, rgba(99,102,241,0.3)); }
+
+  .lite-node-icon { color: var(--muted-foreground); flex-shrink: 0; }
+  .lite-node-current { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .lite-chevron { flex-shrink: 0; transition: transform 0.2s ease; opacity: 0.5; }
+  .lite-chevron.open { transform: rotate(180deg); }
+
+  .lite-node-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    max-height: 280px;
+    overflow-y: auto;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: var(--popover, var(--card));
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    z-index: 40;
+    padding: 4px 0;
+  }
+  :global(.dark) .lite-node-dropdown { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); }
+
+  .lite-ngroup { padding: 2px 0; }
+  .lite-ngroup:not(:last-child) { border-bottom: 1px solid var(--border); }
+
+  .lite-ngroup-label {
+    padding: 6px 14px 2px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+    opacity: 0.6;
   }
 
-  .proxy-seg-btn:hover:not(:disabled) {
+  .lite-nitem {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 14px;
+    border: none;
+    background: transparent;
     color: var(--foreground);
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.1s ease;
   }
+  .lite-nitem:hover { background: var(--muted); }
+  .lite-nitem.active { background: rgba(99,102,241,0.06); }
+  .lite-nitem:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  .proxy-seg-btn.active {
-    background: var(--segment-active-bg, #ffffff);
-    box-shadow: var(--segment-active-shadow, 0 1px 3px rgba(0,0,0,0.12));
-    color: var(--foreground);
+  .lite-nitem-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--muted-foreground); opacity: 0.2; flex-shrink: 0;
+    transition: all 0.15s ease;
+  }
+  .lite-nitem-dot.on { background: #22C55E; opacity: 1; }
+
+  .lite-nitem-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .lite-nitem-type {
+    font-size: 10.5px;
     font-weight: 600;
+    color: var(--muted-foreground);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    opacity: 0.6;
   }
 
-  .proxy-seg-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+  .lite-nitem-spin {
+    font-size: 13px; color: var(--muted-foreground);
+    animation: spin 0.8s linear infinite; flex-shrink: 0;
   }
 
-  /* ---- Traffic metrics ---- */
-  /* ---- Expand chevron ---- */
-  .expand-chevron {
-    transition: transform 0.2s ease;
+  .lite-node-empty {
+    padding: 20px 14px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--muted-foreground);
     opacity: 0.5;
+  }
+
+  .lite-node-manage {
+    display: block;
+    width: 100%;
+    padding: 8px 14px;
+    border: none;
+    background: transparent;
+    color: var(--primary);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    border-top: 1px solid var(--border);
+    transition: background 0.1s ease;
+  }
+  .lite-node-manage:hover { background: var(--muted); }
+
+  /* ---- Main row ---- */
+  .lite-main {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     flex-shrink: 0;
   }
 
-  .expand-chevron.expanded {
-    transform: rotate(180deg);
-  }
-
-  /* ---- Test checks ---- */
-  .test-checks {
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px solid var(--border);
+  /* Left stats */
+  .lite-stats {
     display: flex;
     flex-direction: column;
+    gap: 3px;
+    min-width: 80px;
+    flex-shrink: 0;
+  }
+
+  .lite-stat-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
     gap: 6px;
   }
 
-  .test-check-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 6px;
-    font-size: 11.5px;
+  .lite-stat-label {
+    font-size: 11px;
+    color: var(--muted-foreground);
+    opacity: 0.7;
+    white-space: nowrap;
   }
 
-  .test-check-info {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    min-width: 0;
-  }
-
-  .test-check-name {
+  .lite-stat-val {
+    font-size: 12px;
     font-weight: 600;
+    font-family: var(--font-mono, monospace);
+    font-variant-numeric: tabular-nums;
     color: var(--foreground);
   }
+  .lite-stat-val.down { color: #3B82F6; }
+  .lite-stat-val.up { color: #22C55E; }
+  :global(.dark) .lite-stat-val.down { color: #60A5FA; }
+  :global(.dark) .lite-stat-val.up { color: #4ADE80; }
 
-  .test-check-msg {
-    color: var(--muted-foreground);
-    font-size: 11px;
-    line-height: 1.4;
-    word-break: break-all;
-  }
-
-  /* ---- Current node indicator ---- */
-  .node-link-btn {
-    display: inline-flex;
+  /* Big power button */
+  .lite-power {
+    display: flex;
+    flex-direction: column;
     align-items: center;
-    height: 22px;
-    padding: 0 9px;
-    border-radius: 5px;
-    border: 1px solid var(--border);
-    background: transparent;
-    color: var(--muted-foreground);
-    font-size: 11px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease;
-  }
-
-  .node-link-btn:hover {
+    justify-content: center;
+    gap: 6px;
+    width: 88px;
+    height: 88px;
+    border-radius: 50%;
+    border: 2.5px solid var(--border);
     background: var(--muted);
-    color: var(--foreground);
-  }
-
-  .active-node-name {
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--foreground);
-  }
-
-  .active-node-meta {
-    font-size: 11.5px;
     color: var(--muted-foreground);
-    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+  }
+  .lite-power:hover:not(:disabled) {
+    border-color: rgba(34, 197, 94, 0.5);
+    color: #16A34A;
+    box-shadow: 0 0 20px rgba(34, 197, 94, 0.12);
+  }
+  .lite-power:active:not(:disabled) { transform: scale(0.96); }
+  .lite-power:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .lite-power.on {
+    border-color: rgba(34, 197, 94, 0.5);
+    background: rgba(34, 197, 94, 0.08);
+    color: #16A34A;
+  }
+  .lite-power.on:hover:not(:disabled) {
+    border-color: rgba(239, 68, 68, 0.5);
+    color: var(--destructive, #EF4444);
+    box-shadow: 0 0 20px rgba(239, 68, 68, 0.1);
+  }
+  :global(.dark) .lite-power.on { color: #4ADE80; border-color: rgba(74,222,128,0.4); }
+  :global(.dark) .lite-power.on:hover:not(:disabled) { color: #EF4444; border-color: rgba(239,68,68,0.4); }
+
+  .lite-power.connecting {
+    border-color: rgba(245, 158, 11, 0.5);
+    color: #F59E0B;
   }
 
+  .lite-power-spin { font-size: 22px; animation: spin 0.8s linear infinite; }
+
+  .lite-power-label {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+
+  /* Right: mode switches */
+  .lite-modes {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 80px;
+    flex-shrink: 0;
+  }
+
+  .lite-mode-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+
+  .lite-mode-label {
+    font-size: 11px;
+    color: var(--muted-foreground);
+    white-space: nowrap;
+  }
+
+  .lite-toggle {
+    width: 32px;
+    height: 18px;
+    border-radius: 9px;
+    border: 1.5px solid var(--border);
+    background: var(--muted);
+    position: relative;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+    padding: 0;
+  }
+  .lite-toggle:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  .lite-toggle.on {
+    background: rgba(34, 197, 94, 0.18);
+    border-color: rgba(34, 197, 94, 0.45);
+  }
+  :global(.dark) .lite-toggle.on { background: rgba(74,222,128,0.14); border-color: rgba(74,222,128,0.4); }
+
+  .lite-toggle-thumb {
+    position: absolute;
+    top: 1.5px;
+    left: 1.5px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--muted-foreground);
+    transition: all 0.2s ease;
+    opacity: 0.5;
+  }
+  .lite-toggle.on .lite-toggle-thumb {
+    left: 15px;
+    background: #22C55E;
+    opacity: 1;
+  }
+  :global(.dark) .lite-toggle.on .lite-toggle-thumb { background: #4ADE80; }
+
+  /* ---- Speed bar ---- */
+  .lite-speed-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .lite-speed-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .lite-speed-item.down { color: #3B82F6; }
+  .lite-speed-item.up { color: #22C55E; }
+  :global(.dark) .lite-speed-item.down { color: #60A5FA; }
+  :global(.dark) .lite-speed-item.up { color: #4ADE80; }
+
+  .lite-speed-val {
+    font-size: 12px;
+    font-weight: 700;
+    font-family: var(--font-mono, monospace);
+    font-variant-numeric: tabular-nums;
+    color: var(--foreground);
+  }
+
+  /* ---- Chart ---- */
+  .lite-chart {
+    flex: 1;
+    min-height: 100px;
+    overflow: hidden;
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
 </style>
