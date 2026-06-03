@@ -124,11 +124,30 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: latest.json
 
-      - name: Generate auto release notes
+      - name: Generate release notes from commits
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release edit "${{ github.ref_name }}" \
-            --generate-notes \
-            --repo "${{ github.repository }}" \
-            --latest
+          TAG="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
+
+          # Find previous tag for changelog range
+          git fetch --tags
+          PREV_TAG=$(git tag --sort=-version:refname | grep -A1 "^$TAG\$" | tail -1)
+
+          echo "## Changes in $TAG" > release-notes.md
+          echo >> release-notes.md
+          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$TAG" ]; then
+            echo "**Full diff:** https://github.com/${REPO}/compare/${PREV_TAG}...${TAG}" >> release-notes.md
+            echo >> release-notes.md
+            git log --oneline --no-merges "${PREV_TAG}..${TAG}" | sed 's/^/- /' >> release-notes.md
+          else
+            echo "Initial release." >> release-notes.md
+            echo >> release-notes.md
+            git log --oneline --no-merges | sed 's/^/- /' >> release-notes.md
+          fi
+
+          gh release edit "$TAG" \
+            --repo "$REPO" \
+            --latest \
+            --notes-file release-notes.md
