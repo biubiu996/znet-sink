@@ -16,14 +16,14 @@ use std::os::windows::ffi::OsStrExt;
 #[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, GetLastError, ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, HANDLE,
+        CloseHandle, ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE,
         INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
-    Storage::FileSystem::{CreateFileW, ReadFile, WriteFile, FILE_FLAG_OVERLAPPED, OPEN_EXISTING},
+    Storage::FileSystem::{CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, ReadFile, WriteFile},
     System::{
+        IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
         Pipes::WaitNamedPipeW,
         Threading::{CreateEventW, WaitForSingleObject},
-        IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
     },
 };
 
@@ -279,7 +279,14 @@ impl NamedPipeClient {
             )
         };
 
-        self.finish_overlapped(started, operation.overlapped_mut(), self.read_timeout)
+        // Synchronous completion: ReadFile returned TRUE and already filled
+        // `bytes_read`. The overlapped event is NOT signaled in this case, so
+        // we must return immediately — WaitForSingleObject would time out.
+        if started != 0 {
+            return Ok(bytes_read as usize);
+        }
+
+        self.finish_overlapped(operation.overlapped_mut(), self.read_timeout)
     }
 
     fn write_overlapped(&self, buffer: &[u8]) -> io::Result<usize> {
@@ -299,20 +306,25 @@ impl NamedPipeClient {
             )
         };
 
-        self.finish_overlapped(started, operation.overlapped_mut(), self.write_timeout)
+        // Synchronous completion: WriteFile returned TRUE and already set
+        // `bytes_written`. Same rationale as read_overlapped.
+        if started != 0 {
+            return Ok(bytes_written as usize);
+        }
+
+        self.finish_overlapped(operation.overlapped_mut(), self.write_timeout)
     }
 
+    /// Wait for an overlapped I/O operation that returned ERROR_IO_PENDING.
+    /// Must ONLY be called when ReadFile/WriteFile returned FALSE (started == 0).
     fn finish_overlapped(
         &self,
-        started: i32,
         overlapped: *mut OVERLAPPED,
         timeout: Option<Duration>,
     ) -> io::Result<usize> {
-        if started == 0 {
-            let error = unsafe { GetLastError() };
-            if error != ERROR_IO_PENDING {
-                return Err(io::Error::from_raw_os_error(error as i32));
-            }
+        let error = unsafe { GetLastError() };
+        if error != ERROR_IO_PENDING {
+            return Err(io::Error::from_raw_os_error(error as i32));
         }
 
         if let Some(timeout) = timeout {
