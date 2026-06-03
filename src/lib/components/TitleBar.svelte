@@ -2,6 +2,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { getName, getVersion } from '@tauri-apps/api/app';
   import { store } from '$lib/services/store.svelte';
+  import AppLogo from '$lib/components/AppLogo.svelte';
 
   let appWindow: ReturnType<typeof getCurrentWindow> | null = null;
   let appName = $state('ZNet Sink');
@@ -45,13 +46,8 @@
 >
   <!-- Left: App identity + mode switch inline -->
   <div class="flex items-center gap-2 pl-3.5 min-w-0 overflow-hidden">
-    <!-- Logo: 暗黑模式下反转为白色 -->
-    <img
-      src="/favicon.png"
-      alt="Logo"
-      class="app-logo rounded-[3px] flex-shrink-0"
-      style="width: 18px; height: 18px;"
-    />
+    <!-- Logo: theme-aware icon -->
+    <AppLogo size={18} class="titlebar-logo" />
     <!-- App name -->
     <span
       class="font-semibold text-foreground/90 tracking-tight overflow-hidden text-ellipsis whitespace-nowrap"
@@ -132,15 +128,14 @@
 </div>
 
 <style>
-  /* Logo: 暗黑模式自动反转为白色 */
-  :global(.dark) .app-logo {
-    filter: invert(1) brightness(1.1);
+  /* Logo container in titlebar */
+  .titlebar-logo {
+    opacity: 0.9;
+    transition: opacity 0.15s ease;
   }
 
-  /* Light mode logo: 轻微降低不透明度，与背景融合 */
-  .app-logo {
-    opacity: 0.88;
-    transition: opacity 0.15s ease;
+  .titlebar-logo :global(.app-logo-img) {
+    border-radius: 3px;
   }
 
   /* 分隔线 */

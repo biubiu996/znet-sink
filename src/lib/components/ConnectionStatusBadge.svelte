@@ -1,9 +1,9 @@
 <script lang="ts">
   import { guiState } from '$lib/services/gui-state.svelte';
 
-  const isCoreRunning = $derived(guiState.connection?.state === 'connected');
-  const isCoreStarting = $derived(guiState.connection?.state === 'connecting');
-  const isProxyEnabled = $derived(guiState.connection?.systemProxyEnabled === true);
+  const isCoreRunning = $derived(guiState.isProcessRunning);
+  const isCoreStarting = $derived(guiState.connection?.state === 'connecting' || guiState.isStartingCore);
+  const isProxyEnabled = $derived(guiState.isSystemProxyEnabled);
 
   type Status = 'off' | 'core-only' | 'proxy-active' | 'error';
   const status: Status = $derived(
@@ -21,8 +21,8 @@
   );
 
   const label = $derived(
-    status === 'proxy-active' ? '运行中' :
-    status === 'core-only'   ? '内核运行' :
+    status === 'proxy-active' ? '服务中' :
+    status === 'core-only'   ? '内核监听' :
     status === 'error'       ? '异常' :
     '未激活'
   );

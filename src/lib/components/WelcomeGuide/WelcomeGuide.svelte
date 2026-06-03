@@ -2,6 +2,7 @@
   import { scale, fly, fade } from 'svelte/transition';
   import { elasticOut, cubicOut } from 'svelte/easing';
   import { store } from '$lib/services/store.svelte';
+  import AppLogo from '$lib/components/AppLogo.svelte';
 
   let step = $state(0);
   let selectedMode = $state<'lite' | 'pro'>('lite');
@@ -24,7 +25,7 @@
     class="text-center mb-6"
   >
     <div class="welcome-icon">
-      <img src="/favicon.png" alt="ZNet Sink" style="width: 32px; height: 32px;" class="rounded-lg opacity-90" />
+      <AppLogo size={32} class="welcome-logo" />
     </div>
     <h2 class="welcome-title">ZNet Sink</h2>
     <p class="welcome-sub">零域网络代理客户端</p>
@@ -51,7 +52,7 @@
         <div class="step-number">01</div>
         <h3 class="step-title">配置内核</h3>
         <p class="step-desc">
-          GUI 和内核是分离的。内核是实际的代理引擎，GUI 提供可视化管理。
+          GUI 和内核是分离的。内核负责代理引擎，系统代理由 GUI 作为外置开关设置。
         </p>
         <p class="step-desc" style="font-size: 12px; opacity: 0.7;">
           完成引导后，在「设置 → 内核」中指定内核路径即可开始使用。
@@ -95,14 +96,14 @@
         <div class="step-number">03</div>
         <h3 class="step-title">快速开始</h3>
         <p class="step-desc">
-          配置好内核后，在概览页点击「一键连接」即可启动代理。
+          配置好内核后，在概览页点击「一键开启服务」即可启动内核并设置系统代理。
           以下是一些建议：
         </p>
         <ul class="tips-list">
           <li>先在「设置 → 内核」中配置内核路径</li>
           <li>在「配置」页添加代理配置文件（支持本地 JSON 或粘贴内容）</li>
           <li>在「订阅」页添加订阅 URL，自动获取最新节点</li>
-          <li>配置完毕后，在「概览」页点击「一键连接」启动代理</li>
+          <li>配置完毕后，在「概览」页点击「一键开启服务」启动内核并设置系统代理</li>
         </ul>
         <div class="step-actions">
           <button onclick={prev} class="secondary-action">上一步</button>
@@ -126,6 +127,10 @@
     align-items: center;
     justify-content: center;
     margin: 0 auto 10px;
+  }
+
+  .welcome-logo :global(.app-logo-img) {
+    border-radius: 8px;
   }
 
   .welcome-title {

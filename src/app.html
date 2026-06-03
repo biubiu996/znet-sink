@@ -5,13 +5,16 @@
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ZNet Sink</title>
-    <!-- Anti-flash: apply theme before first paint -->
+    <!-- Anti-flash: apply theme before first paint & set theme-aware favicon -->
     <script>
       (function() {
-        const theme = localStorage.getItem('znet-theme');
-        if (theme === 'dark' || (theme !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-          document.documentElement.classList.add('dark');
-        }
+        var dark = localStorage.getItem('znet-theme') === 'dark'
+          || (localStorage.getItem('znet-theme') !== 'light'
+              && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        if (dark) document.documentElement.classList.add('dark');
+        // Set favicon based on theme
+        var link = document.querySelector('link[rel="icon"]');
+        if (link) link.href = dark ? '/app-icon.png' : '/app-icon-bg.png';
       })();
     </script>
     %sveltekit.head%

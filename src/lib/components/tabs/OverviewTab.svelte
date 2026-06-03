@@ -7,13 +7,9 @@
   import KernelVersionCard from '$lib/components/core/KernelVersionCard.svelte';
   import TunStackStatus from '$lib/components/core/TunStackStatus.svelte';
   import LogPanel from '$lib/components/core/LogPanel.svelte';
-  import { Badge } from '$lib/components/ui/badge';
   import {
-    selectPolicy, probePolicy,
-    enableSystemProxy, disableSystemProxy,
-    getSystemProxyStatus, getGuiTunStatus, getGuiProxyModeStatus,
+    selectPolicy,
   } from '$lib/services/core';
-  import type { GuiFeatureStatus } from '$lib/types/gui-api';
 
   function formatUptime(ms?: number): string {
     if (!ms) return '—';
@@ -48,10 +44,6 @@
   // ── Lite mode state ──
   let nodeDropdownOpen = $state(false);
   let nodeSwitching = $state<string | null>(null);
-  let proxyEnabled = $state(false);
-  let tunStatus = $state<GuiFeatureStatus | null>(null);
-  let switchingProxy = $state(false);
-  let switchingTun = $state(false);
 
   // Speed derived from history
   const currentDown = $derived(
@@ -65,9 +57,18 @@
       : 0,
   );
 
-  const isConnected = $derived(guiState.connection?.state === 'connected');
-  const isConnecting = $derived(guiState.isConnecting);
+  const isConnected = $derived(guiState.isConnected);
   const isDirectMode = $derived(guiState.proxyMode?.currentMode === 'direct');
+  const proxyEnabled = $derived(guiState.isSystemProxyEnabled);
+  const isCoreRunning = $derived(guiState.isProcessRunning);
+  const isPowerBusy = $derived(guiState.isConnecting || guiState.isDisconnecting);
+  const powerLabel = $derived(
+    guiState.isConnecting ? '启用中' :
+    guiState.isDisconnecting ? '关闭中' :
+    proxyEnabled ? '服务中' :
+    isCoreRunning ? '开启系统代理' :
+    '开启服务'
+  );
 
   // Current node for display
   const activeNodeName = $derived.by(() => {
@@ -129,31 +130,6 @@
     nodeDropdownOpen = false;
   }
 
-  // Refresh proxy/tun state
-  async function refreshProxyState() {
-    try {
-      const s = await getSystemProxyStatus();
-      proxyEnabled = s.enabled;
-    } catch { proxyEnabled = false; }
-    try {
-      tunStatus = await getGuiTunStatus();
-    } catch { tunStatus = null; }
-  }
-
-  $effect(() => {
-    if (guiState.connection !== null) refreshProxyState();
-  });
-
-  async function toggleSystemProxy() {
-    if (switchingProxy) return;
-    switchingProxy = true;
-    try {
-      if (proxyEnabled) { await disableSystemProxy(); proxyEnabled = false; }
-      else { await enableSystemProxy(); proxyEnabled = true; }
-    } catch { /* keep state */ }
-    switchingProxy = false;
-  }
-
   async function toggleDirect() {
     try {
       if (isDirectMode) {
@@ -172,43 +148,6 @@
     <!-- Row 1: Status cards -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 flex-shrink-0">
       <CoreStatusCard />
-
-      <!-- Connection state -->
-      <div class="overview-card flex flex-col gap-2 overflow-hidden" style="min-height: 96px;">
-        <div class="flex items-center justify-between flex-shrink-0">
-          <span class="card-label">连接状态</span>
-          {#if guiState.connection?.state === 'connected'}
-            <span class="status-chip active">已连接</span>
-          {:else}
-            <span class="status-chip">未连接</span>
-          {/if}
-        </div>
-
-        {#if guiState.connection?.state === 'connected'}
-          <div class="flex items-center gap-1 text-muted-foreground mt-auto flex-wrap" style="font-size: 12px;">
-            <span>在线时长：</span>
-            <span class="font-mono font-semibold text-foreground">{formatUptime(guiState.connection.uptimeMs)}</span>
-            <button
-              onclick={guiState.disconnect}
-              disabled={!guiState.canDisconnect || guiState.isDisconnecting}
-              class="pro-disconnect-btn"
-            >
-              {guiState.isDisconnecting ? '断开中…' : '断开'}
-            </button>
-          </div>
-        {:else}
-          <div class="mt-auto flex justify-center">
-            <button
-              onclick={guiState.connect}
-              disabled={!guiState.canConnect || guiState.isConnecting}
-              class="connect-btn"
-              aria-label="一键连接"
-            >
-              {guiState.isConnecting ? '连接中…' : '一键连接'}
-            </button>
-          </div>
-        {/if}
-      </div>
 
       <!-- Proxy mode -->
       <div class="overview-card flex flex-col gap-2 overflow-hidden" style="min-height: 96px;">
@@ -421,15 +360,15 @@
       <!-- Center: big power button -->
       <button
         class="lite-power"
-        class:on={isConnected}
-        class:connecting={isConnecting}
+        class:on={proxyEnabled}
+        class:connecting={isPowerBusy}
         onclick={() => isConnected ? guiState.disconnect() : guiState.connect()}
-        disabled={isConnecting || guiState.isDisconnecting || (!isConnected && !guiState.canConnect)}
-        aria-label={isConnected ? '断开连接' : '连接'}
+        disabled={isPowerBusy || (!isConnected && !guiState.canConnect)}
+        aria-label={isConnected ? '关闭服务' : isCoreRunning ? '开启系统代理' : '开启服务'}
       >
-        {#if isConnecting || guiState.isDisconnecting}
+        {#if isPowerBusy}
           <span class="lite-power-spin">⟳</span>
-        {:else if isConnected}
+        {:else if proxyEnabled}
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
             <line x1="12" y1="2" x2="12" y2="12"/>
@@ -441,7 +380,7 @@
           </svg>
         {/if}
         <span class="lite-power-label">
-          {isConnecting ? '连接中' : guiState.isDisconnecting ? '断开中' : isConnected ? '已连接' : '连接'}
+          {powerLabel}
         </span>
       </button>
 
@@ -451,9 +390,8 @@
           <span class="lite-mode-label">系统代理</span>
           <button
             class="lite-toggle {proxyEnabled ? 'on' : ''}"
-            onclick={toggleSystemProxy}
-            disabled={switchingProxy}
-            aria-label="切换系统代理"
+            disabled
+            aria-label="系统代理状态"
           >
             <span class="lite-toggle-thumb"></span>
           </button>
@@ -461,10 +399,11 @@
         <div class="lite-mode-row">
           <span class="lite-mode-label">TUN</span>
           <button
-            class="lite-toggle {tunStatus?.enabled ? 'on' : ''}"
-            disabled
-            title="TUN 功能开发中"
-            aria-label="TUN 模式开关（开发中）"
+            class="lite-toggle {guiState.isTunEnabled ? 'on' : ''}"
+            onclick={() => guiState.toggleTun()}
+            disabled={guiState.isTunEnabled ? !guiState.canDisableTun : !guiState.canEnableTun}
+            title={guiState.isTunEnabled ? 'TUN 已开启' : 'TUN 未开启'}
+            aria-label="切换 TUN"
           >
             <span class="lite-toggle-thumb"></span>
           </button>
@@ -525,38 +464,7 @@
 
   .card-label { font-size: 12px; font-weight: 500; color: var(--muted-foreground); letter-spacing: 0.01em; }
 
-  .status-chip {
-    display: inline-flex; align-items: center; gap: 4px;
-    font-size: 11px; font-weight: 600; padding: 3px 7px; border-radius: 4px;
-    background: var(--muted); color: var(--muted-foreground);
-  }
-  .status-chip.active { background: rgba(34, 197, 94, 0.1); color: #16A34A; }
-  :global(.dark) .status-chip.active { background: rgba(74, 222, 128, 0.12); color: #4ADE80; }
-
   .mode-indicator { font-size: 11px; font-weight: 600; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
-
-  .connect-btn {
-    display: inline-flex; align-items: center; justify-content: center;
-    height: 32px; min-width: 108px; max-width: 180px; padding: 0 18px;
-    border-radius: 8px; border: none; background: var(--primary); color: var(--primary-foreground);
-    font-size: 12.5px; font-weight: 600; cursor: pointer; letter-spacing: -0.01em;
-    transition: opacity 0.13s ease, transform 0.13s ease, box-shadow 0.13s ease;
-    white-space: nowrap;
-  }
-  .connect-btn:hover:not(:disabled) { opacity: 0.88; transform: translateY(-0.5px); }
-  .connect-btn:active:not(:disabled) { opacity: 0.78; transform: translateY(0); }
-  .connect-btn:disabled { opacity: 0.38; cursor: not-allowed; }
-  :global(.dark) .connect-btn { box-shadow: 0 0 0 0.5px rgba(255,255,255,0.1), 0 2px 8px rgba(0,0,0,0.3); }
-
-  .pro-disconnect-btn {
-    margin-left: 10px; display: inline-flex; align-items: center; justify-content: center;
-    height: 24px; padding: 0 10px; border-radius: 5px;
-    border: 1px solid rgba(239,68,68,0.3); background: rgba(239,68,68,0.06);
-    color: var(--destructive, #EF4444); font-size: 11px; font-weight: 500;
-    cursor: pointer; transition: opacity 0.13s ease; white-space: nowrap;
-  }
-  .pro-disconnect-btn:hover:not(:disabled) { opacity: 0.8; }
-  .pro-disconnect-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
   .proxy-segment { display: flex; align-items: center; gap: 1px; background: var(--segment-bg, rgba(0,0,0,0.055)); padding: 2px; border-radius: 7px; width: 100%; }
   .proxy-seg-btn {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getName, getVersion } from '@tauri-apps/api/app';
   import { updater } from '$lib/services/updater.svelte';
+  import AppLogo from '$lib/components/AppLogo.svelte';
 
   let appName = $state('ZNet Sink');
   let appVersion = $state('0.0.1');
@@ -42,7 +43,7 @@
   <!-- Hero -->
   <div class="about-hero">
     <div class="about-logo">
-      <img src="/app-icon.png" alt="ZNet Sink" width="48" height="48" class="app-logo-img" />
+      <AppLogo size={48} />
     </div>
     <div class="about-hero-text">
       <span class="about-hero-name">{appName}</span>
@@ -186,11 +187,6 @@
 
   .about-logo {
     flex-shrink: 0;
-  }
-
-  .app-logo-img {
-    border-radius: 10px;
-    display: block;
   }
 
   .about-hero-text {

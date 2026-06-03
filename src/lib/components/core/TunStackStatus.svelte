@@ -1,29 +1,32 @@
 <script lang="ts">
   import { coreEvents } from '$lib/services/core-events.svelte';
-  import { getGuiTunStatus, getGuiStackStatus } from '$lib/services/core';
+  import { getGuiStackStatus } from '$lib/services/core';
   import type { GuiFeatureStatus } from '$lib/types/gui-api';
   import { store } from '$lib/services/store.svelte';
+  import { guiState } from '$lib/services/gui-state.svelte';
 
-  let tunStatus = $state<GuiFeatureStatus | null>(null);
   let stackStatus = $state<GuiFeatureStatus | null>(null);
   let mounted = $state(false);
 
   const tunLabel = $derived(
-    !tunStatus ? '—' :
+    !guiState.tunStatus ? '—' :
+    guiState.isSwitchingTun ? '切换中' :
     coreEvents.tunState === 'started' ? '活跃' :
     coreEvents.tunState === 'error' ? '异常' :
-    tunStatus.supported ? '就绪' : '不支持'
+    guiState.tunStatus.enabled ? '已开启' :
+    guiState.tunStatus.supported ? '未开启' : '不支持'
   );
 
   const tunDotColor = $derived(
     coreEvents.tunState === 'started' ? '#22C55E' :
     coreEvents.tunState === 'error' ? '#EF4444' :
-    tunStatus?.supported ? '#F59E0B' : 'var(--muted-foreground)'
+    guiState.isTunEnabled ? '#22C55E' :
+    guiState.tunStatus?.supported ? '#F59E0B' : 'var(--muted-foreground)'
   );
 
   const stackLabel = $derived(
     !stackStatus ? '—' :
-    coreEvents.stackState === 'started' ? coreEvents.stackMode ?? '运行中' :
+    coreEvents.stackState === 'started' ? coreEvents.stackMode ?? '已启动' :
     coreEvents.stackState === 'degraded' ? '降级' :
     stackStatus.supported ? '就绪' : '不支持'
   );
@@ -36,11 +39,10 @@
 
   async function refresh() {
     try {
-      const [tun, stack] = await Promise.all([
-        getGuiTunStatus(),
+      const [, stack] = await Promise.all([
+        guiState.refreshTunStatus(),
         getGuiStackStatus(),
       ]);
-      tunStatus = tun;
       stackStatus = stack;
     } catch {
       // Feature queries may fail if core is not running
@@ -72,12 +74,21 @@
       <div class="feature-dot" style="background: {tunDotColor};"></div>
       <span class="feature-name">TUN 网卡</span>
       <span class="feature-value">{tunLabel}</span>
+      <button
+        class="feature-switch {guiState.isTunEnabled ? 'on' : ''}"
+        onclick={() => guiState.toggleTun()}
+        disabled={guiState.isTunEnabled ? !guiState.canDisableTun : !guiState.canEnableTun}
+        title={guiState.isTunEnabled ? '关闭 TUN' : '开启 TUN'}
+        aria-label={guiState.isTunEnabled ? '关闭 TUN' : '开启 TUN'}
+      >
+        <span></span>
+      </button>
     </div>
 
     <!-- Stack status -->
     <div class="feature-row">
       <div class="feature-dot" style="background: {stackDotColor};"></div>
-      <span class="feature-name">网络栈</span>
+      <span class="feature-name">内核网络栈</span>
       <span class="feature-value">{stackLabel}</span>
     </div>
   </div>
@@ -147,7 +158,7 @@
     font-size: 11.5px;
     font-weight: 500;
     color: var(--muted-foreground);
-    min-width: 52px;
+    min-width: 68px;
   }
 
   .feature-value {
@@ -155,6 +166,49 @@
     font-weight: 600;
     color: var(--foreground);
     font-variant-numeric: tabular-nums;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .feature-switch {
+    width: 30px;
+    height: 17px;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: var(--muted);
+    position: relative;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+    flex-shrink: 0;
+    padding: 0;
+  }
+
+  .feature-switch span {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--muted-foreground);
+    opacity: 0.55;
+    transition: left 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+  }
+
+  .feature-switch.on {
+    background: rgba(34, 197, 94, 0.16);
+    border-color: rgba(34, 197, 94, 0.42);
+  }
+
+  .feature-switch.on span {
+    left: 15px;
+    background: #22C55E;
+    opacity: 1;
+  }
+
+  .feature-switch:disabled {
+    cursor: not-allowed;
+    opacity: 0.42;
   }
 
   .feature-error {
