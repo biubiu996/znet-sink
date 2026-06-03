@@ -22,7 +22,9 @@ fn normalize_config_format(input: Option<String>) -> AppResult<String> {
     if format.trim().eq_ignore_ascii_case("json") {
         Ok("json".to_string())
     } else {
-        Err(AppError::invalid_argument("proxy config format must be json"))
+        Err(AppError::invalid_argument(
+            "proxy config format must be json",
+        ))
     }
 }
 

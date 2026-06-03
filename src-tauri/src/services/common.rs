@@ -47,11 +47,7 @@ pub(crate) fn normalize_required(value: String, field: &'static str) -> AppResul
 pub(crate) fn normalize_optional(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
         let value = value.trim().to_string();
-        if value.is_empty() {
-            None
-        } else {
-            Some(value)
-        }
+        if value.is_empty() { None } else { Some(value) }
     })
 }
 

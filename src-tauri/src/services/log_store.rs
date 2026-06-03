@@ -144,7 +144,6 @@ fn logs_path() -> AppResult<PathBuf> {
     Ok(data_dir()?.join(LOGS_FILE))
 }
 
-
 #[cfg(test)]
 mod tests {
     use crate::models::logs::{LogLevel, LogSource};

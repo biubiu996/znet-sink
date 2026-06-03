@@ -68,7 +68,9 @@ pub fn cleanup_on_startup() {
 
     // Only disable if the current system proxy still matches our endpoint
     match system_proxy::status() {
-        Ok(status) if status.enabled && status.host == marker.host && status.port == marker.port => {
+        Ok(status)
+            if status.enabled && status.host == marker.host && status.port == marker.port =>
+        {
             eprintln!(
                 "[ZNet] proxy guard: disabling stale system proxy ({}:{})",
                 marker.host, marker.port

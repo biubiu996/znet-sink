@@ -1,7 +1,7 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
 use tauri::AppHandle;
@@ -9,7 +9,7 @@ use tauri::AppHandle;
 use crate::core::ipc;
 use crate::errors::{AppError, AppResult};
 use crate::events::emitter::{
-    emit_core_event, emit_core_event_status, CORE_EVENT_NAME, CORE_EVENT_STATUS_NAME,
+    CORE_EVENT_NAME, CORE_EVENT_STATUS_NAME, emit_core_event, emit_core_event_status,
 };
 use crate::models::core::{CoreEndpoint, CoreEventSubscription, CoreIpcOptions};
 use crate::services::control_plane::{endpoint_from_options, timeout_from_options};

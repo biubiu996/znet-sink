@@ -1,5 +1,5 @@
-use serde::Serialize;
 use crate::services::common;
+use serde::Serialize;
 
 use crate::errors::{AppError, AppResult};
 
@@ -169,7 +169,7 @@ fn extract_prop<'a>(output: &'a str, key: &str) -> Option<&'a str> {
 fn set_proxy_platform(host: &str, port: u16, enable: bool) -> AppResult<()> {
     use std::ptr;
     use windows_sys::Win32::Networking::WinInet::{
-        InternetSetOptionW, INTERNET_OPTION_PROXY_SETTINGS_CHANGED, INTERNET_OPTION_REFRESH,
+        INTERNET_OPTION_PROXY_SETTINGS_CHANGED, INTERNET_OPTION_REFRESH, InternetSetOptionW,
     };
 
     // Set ProxyEnable via registry
@@ -266,7 +266,7 @@ fn status_platform() -> AppResult<SystemProxyStatus> {
             Err(e) => {
                 return Err(AppError::internal(format!(
                     "failed to query Windows ProxyServer: {e}"
-                )))
+                )));
             }
         };
 

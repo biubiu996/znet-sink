@@ -1,7 +1,7 @@
 use std::time::Duration;
 use tauri::State;
 
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 
 use crate::errors::{AppError, AppResult};
 use crate::models::proxy_config::ProxyConfigProfile;

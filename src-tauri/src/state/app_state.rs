@@ -1,7 +1,7 @@
 use std::process::Child;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
 };
 use std::thread::JoinHandle;
 

@@ -50,4 +50,3 @@ pub fn save(path: &Path, config: &AppConfig) -> AppResult<()> {
         details: Some(serde_json::json!({ "path": path.display().to_string() })),
     })
 }
-

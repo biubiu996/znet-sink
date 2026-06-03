@@ -11,7 +11,9 @@ pub async fn kernel_list_versions(_state: State<'_, AppState>) -> AppResult<Kern
     // Read-only — available in both lite and pro mode
     tauri::async_runtime::spawn_blocking(|| kernel_manager::list_available_versions())
         .await
-        .map_err(|e| crate::errors::AppError::internal(format!("version list thread panicked: {e}")))?
+        .map_err(|e| {
+            crate::errors::AppError::internal(format!("version list thread panicked: {e}"))
+        })?
 }
 
 #[tauri::command]
@@ -34,11 +36,11 @@ pub async fn kernel_install_version(
 #[tauri::command]
 pub async fn kernel_detect_version(state: State<'_, AppState>) -> AppResult<KernelVersionDetect> {
     // Read-only — available in both lite and pro mode
-    let config: AppCoreConfig = {
-        common::lock(state.app_config(), "app_config")?.core.clone()
-    };
+    let config: AppCoreConfig = { common::lock(state.app_config(), "app_config")?.core.clone() };
     // Process spawn — must run on blocking thread to avoid freezing UI
     tauri::async_runtime::spawn_blocking(move || kernel_manager::detect_installed_version(&config))
         .await
-        .map_err(|e| crate::errors::AppError::internal(format!("version detect thread panicked: {e}")))?
+        .map_err(|e| {
+            crate::errors::AppError::internal(format!("version detect thread panicked: {e}"))
+        })?
 }

@@ -38,8 +38,7 @@ const LEVEL_ORDER: &[LogLevel] = &[
 ];
 
 fn level_meets(level: &LogLevel, min: &LogLevel) -> bool {
-    LEVEL_ORDER.iter().position(|l| l == level)
-        <= LEVEL_ORDER.iter().position(|l| l == min)
+    LEVEL_ORDER.iter().position(|l| l == level) <= LEVEL_ORDER.iter().position(|l| l == min)
 }
 
 /// Write a log entry visible in production.
@@ -47,11 +46,7 @@ fn level_meets(level: &LogLevel, min: &LogLevel) -> bool {
 /// - Always writes to stderr if `level` meets the `ZNET_LOG` threshold.
 /// - If `state` is provided, also writes to the in-memory log buffer
 ///   (visible in the frontend LogPanel).
-pub(crate) fn znet_log(
-    state: Option<&AppState>,
-    level: LogLevel,
-    message: impl Into<String>,
-) {
+pub(crate) fn znet_log(state: Option<&AppState>, level: LogLevel, message: impl Into<String>) {
     let msg: String = message.into();
     let min = stderr_level();
 
