@@ -79,8 +79,12 @@
     for (const g of guiState.policyGroups) {
       if (g.selected) return g.selected;
     }
-    // Fall back to first non-selector config node
-    return guiState.configNodes.find(n => !n.isSelector)?.tag ?? null;
+    // Fall back: first non-selector config node, or any config node
+    const cn = guiState.configNodes;
+    console.warn('[overview] activeNodeName: configNodes=', cn.length,
+      'selectors=', cn.filter(n => n.isSelector).map(n => n.tag),
+      'regular=', cn.filter(n => !n.isSelector).map(n => n.tag));
+    return cn.find(n => !n.isSelector)?.tag ?? cn[0]?.tag ?? null;
   });
 
   // Active node info for Pro mode card
@@ -101,6 +105,9 @@
   // Flat node list for dropdown — config nodes as base, runtime data when connected
   const dropdownGroups = $derived.by(() => {
     const groups = guiState.policyGroups;
+    console.warn('[overview] dropdownGroups: policyGroups=', groups.length,
+      'configNodes=', guiState.configNodes.length,
+      'hasConfig=', guiState.configNodes.length > 0 || guiState.proxyMode != null);
     if (groups.length > 0) {
       return groups.map(g => ({
         name: g.name,
