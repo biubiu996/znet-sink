@@ -109,7 +109,17 @@ pub async fn capability_feature_keys(state: &AppState) -> AppResult<Vec<String>>
 
 pub async fn policy_groups(state: &AppState) -> AppResult<Vec<GuiPolicyGroup>> {
     let value = query_result(state, json!({"type":"policies"})).await?;
-    Ok(parse_policy_groups(&value))
+    let groups = parse_policy_groups(&value);
+    crate::services::logs::znet_log(
+        Some(state),
+        crate::models::logs::LogLevel::Info,
+        format!(
+            "policies query returned {} groups from core, raw result: {}",
+            groups.len(),
+            serde_json::to_string(&value).unwrap_or_else(|_| "<non-serializable>".to_string())
+        ),
+    );
+    Ok(groups)
 }
 
 pub async fn select_policy(
@@ -471,6 +481,7 @@ fn parse_policy_groups(value: &Value) -> Vec<GuiPolicyGroup> {
             "policy_groups",
             "policyGroups",
             "groups",
+            "outbounds",
             "items",
         ],
     )
@@ -498,7 +509,7 @@ fn parse_policy_group(value: Value) -> Option<GuiPolicyGroup> {
 fn parse_policy_members(value: &Value, selected: Option<&str>) -> Vec<GuiPolicyMember> {
     values_from_container(
         value,
-        &["members", "targets", "children", "proxies", "items"],
+        &["members", "targets", "children", "proxies", "outbounds", "items"],
     )
     .into_iter()
     .filter_map(|member| parse_policy_member(member, selected))
