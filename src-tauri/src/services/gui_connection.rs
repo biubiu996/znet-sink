@@ -29,17 +29,24 @@ pub async fn connect(
 
     let managed_running =
         core_process::refresh_status(state.inner())?.state == CoreProcessState::Running;
-    let existing_core_ready = if managed_running {
-        true
-    } else {
-        zero_adapter::core_readiness_health(state.inner())
+
+    // If a core is responding on the pipe but we do NOT own a child process
+    // for it, it's a stale instance left by a previous session. Kill it so
+    // we can start a fresh one with the current config instead of blocking.
+    if !managed_running {
+        if zero_adapter::core_readiness_health(state.inner())
             .await
             .is_ok()
-    };
+        {
+            core_process::kill_external(state.inner())?;
+        }
+    }
 
     let mut started_this_call = false;
-    if !existing_core_ready {
-        let process = core_process::start(app_handle, state.clone())?;
+    if managed_running {
+        // We already manage a running core — no need to start another one.
+    } else {
+        let process = core_process::start(app_handle.clone(), state.clone())?;
         started_this_call = process.state == CoreProcessState::Running;
         if process.state != CoreProcessState::Running {
             return build_status(

@@ -19,6 +19,51 @@ pub fn status(state: State<'_, AppState>) -> AppResult<CoreProcessStatus> {
     refresh_status(state.inner())
 }
 
+/// Kill any core process left by a previous session that we don't own.
+///
+/// Uses OS-level force-kill (`taskkill` on Windows, `pkill` on Unix) to
+/// terminate the core executable, then waits briefly for the OS and the
+/// named pipe server to release handles.
+pub(crate) fn kill_external(state: &AppState) -> AppResult<()> {
+    let config = { lock(state.app_config(), "app_config")?.core.clone() };
+    let snapshot = core_config::snapshot_from_config(&config)?;
+
+    let executable_name = snapshot
+        .executable_path
+        .as_deref()
+        .and_then(|path| std::path::Path::new(path).file_name())
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_string());
+
+    let Some(executable_name) = executable_name else {
+        return Ok(());
+    };
+
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", &executable_name])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("pkill")
+            .args(["-9", &executable_name])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    // Give the OS and pipe server time to release handles before we
+    // try to spawn a new process.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    Ok(())
+}
+
 pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<CoreProcessStatus> {
     let has_active_proxy_config = lock(state.proxy_configs(), "proxy_config")?
         .iter()
@@ -86,6 +131,11 @@ pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<Cor
             last_error: None,
         };
     }
+
+    // Kill any stale core process left by a previous GUI session (crashed
+    // tab, force-quit, etc.).  Without this the new core can't bind the
+    // named pipe and the whole flow blocks.
+    let _ = kill_external(state.inner());
 
     let mut command = common::background_command(executable_path);
     command.args(&snapshot.launch_args);
@@ -155,6 +205,18 @@ pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<Cor
                         None
                     };
                     if exited_info.is_some() || process.child.is_none() {
+                        // If stop() already took the child and set the exit
+                        // reason, don't overwrite it with a false "crashed"
+                        // event.  The status was handled in stop() above.
+                        if process.child.is_none()
+                            && matches!(
+                                process.status.exit_reason,
+                                Some(CoreProcessExitReason::Stopped)
+                            )
+                        {
+                            break;
+                        }
+
                         let code = exited_info.as_ref().and_then(|es| es.code());
                         // code == None ⇒ killed by signal (Unix) → crashed
                         // code == Some(_) ⇒ normal exit (any code, including 1) → exited

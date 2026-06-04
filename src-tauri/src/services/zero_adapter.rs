@@ -63,28 +63,45 @@ pub async fn core_overview(state: &AppState) -> AppResult<GuiCoreOverview> {
     })
 }
 
+/// Query the core's detailed health info (version, uptime, etc.).
+///
+/// Prefer [`core_readiness_health`] for liveness checks — it pings first to
+/// avoid wasting a pipe instance on a potentially unsupported query type.
 pub async fn core_health(state: &AppState) -> AppResult<GuiCoreHealth> {
-    // Use a short timeout for health polling (300ms instead of default 3s)
-    // so the wait_for_health retry loop can make many attempts within its window.
-    // Each failed attempt only burns 300ms instead of 1-3s, giving us ~20+ retries
-    // in the 8s window instead of just 4.
-    let value = query_result_with_timeout(state, json!("Health"), 300).await?;
+    // Use a moderate timeout (1.5s) so the core has time to respond even
+    // when it synthesises the Health object from multiple internal sources,
+    // but retry loops won't block for the full default 3s.
+    let value = query_result_with_timeout(state, json!("Health"), 1_500).await?;
     Ok(parse_health(&value))
 }
 
+/// Fast liveness check that avoids exhausting pipe instances.
+///
+/// Pings first — ping is always supported and the core always responds
+/// immediately, so the pipe instance is never left in a stale state.
+/// Only then optionally enriches with the detailed Health query.
+///
+/// Legacy core versions may not support the `Health` query type, causing
+/// every `core_health` call to time out and leave a connected-but-abandoned
+/// pipe instance on the server side.  With enough rapid retries the named
+/// pipe runs out of available instances and `CreateFileW` returns
+/// ERROR_PIPE_BUSY (231).
 pub async fn core_readiness_health(state: &AppState) -> AppResult<GuiCoreHealth> {
-    match core_health(state).await {
-        Ok(health) => Ok(health),
-        Err(health_error) => {
-            let ping = control_plane::ping(default_options(state)?).await?;
-            unwrap_call_result(ping.response, ping.error)?;
-            let _ = health_error;
-            Ok(GuiCoreHealth {
-                healthy: true,
-                engine_version: None,
-                started_at_unix_ms: None,
-            })
-        }
+    // Ping first: always supported, always gets a clean response, never
+    // leaves a stale pipe instance.
+    let ping = control_plane::ping(default_options(state)?).await?;
+    unwrap_call_result(ping.response, ping.error)?;
+
+    // Enrich with detailed health info if the core supports it.
+    // A longer timeout is fine here — this is optional enrichment, and we
+    // already know the core is alive from the ping above.
+    match query_result_with_timeout(state, json!("Health"), 2_000).await {
+        Ok(value) => Ok(parse_health(&value)),
+        Err(_) => Ok(GuiCoreHealth {
+            healthy: true,
+            engine_version: None,
+            started_at_unix_ms: None,
+        }),
     }
 }
 
