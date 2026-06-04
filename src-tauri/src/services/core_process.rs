@@ -137,6 +137,17 @@ pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<Cor
     // named pipe and the whole flow blocks.
     let _ = kill_external(state.inner());
 
+    let _ = logs::append_entry(
+        state.inner(),
+        LogSource::App,
+        LogLevel::Info,
+        format!(
+            "core process: spawning {} with args {:?}",
+            executable_path, snapshot.launch_args
+        ),
+        None,
+    );
+
     let mut command = common::background_command(executable_path);
     command.args(&snapshot.launch_args);
     if let Some(working_dir) = snapshot.working_dir.as_deref() {
@@ -272,7 +283,7 @@ pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<Cor
             Ok(process.status.clone())
         }
         Err(error) => {
-            let message = format!("failed to start core process: {error}");
+            let message = format!("failed to spawn core process: {error}");
             let mut process = lock(state.core_process(), "core_process")?;
             process.status.state = CoreProcessState::Failed;
             process.status.last_error = Some(message.clone());
@@ -283,7 +294,12 @@ pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<Cor
                 LogSource::Core,
                 LogLevel::Error,
                 message.clone(),
-                Some(json!({ "executablePath": executable_path })),
+                Some(json!({
+                    "executablePath": executable_path,
+                    "args": snapshot.launch_args,
+                    "workingDir": snapshot.working_dir,
+                    "configPath": snapshot.config_path,
+                })),
             )?;
 
             Err(AppError::internal(message))
