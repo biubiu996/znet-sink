@@ -16,6 +16,7 @@ import {
   getGuiPolicyGroups,
 } from './core';
 import { error as toastError, success as toastSuccess } from './toast.svelte';
+import { coreEvents } from './core-events.svelte';
 import type {
   SelfTestSnapshot,
   ConnectionStatus,
@@ -109,8 +110,11 @@ class GuiStateStore {
 
   async refreshPolicyGroups() {
     try {
-      this.policyGroups = await getGuiPolicyGroups();
-    } catch {
+      const groups = await getGuiPolicyGroups();
+      console.debug('[gui-state] policy groups loaded:', groups.length, 'groups');
+      this.policyGroups = groups;
+    } catch (e: any) {
+      console.debug('[gui-state] policy groups failed:', this.errorMessage(e));
       this.policyGroups = [];
     }
   }
@@ -141,6 +145,7 @@ class GuiStateStore {
     try {
       this.connection = await guiConnect();
       toastSuccess('系统代理已开启，服务已生效');
+      coreEvents.start(); // re-subscribe after core is running
       await Promise.allSettled([
         this.refreshProxyMode(),
         this.refreshCoreOverview(),
@@ -178,6 +183,7 @@ class GuiStateStore {
     try {
       await startCoreProcess();
       toastSuccess('内核监听已启动');
+      coreEvents.start(); // re-subscribe after core is running
       await this.refreshRuntimeState();
       await this.refreshSelfTest();
     } catch (e: any) {
