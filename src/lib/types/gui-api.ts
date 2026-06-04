@@ -60,6 +60,12 @@ export interface TrafficStats {
   connectionCount: number;
 }
 
+export interface ConfigProxyNode {
+  tag: string;
+  protocol: string;
+  isSelector: boolean;
+}
+
 export interface PolicyOutbound {
   tag: string;
   type: string;

@@ -4,7 +4,7 @@ import type { CoreProcessStatus, CoreCallResult, CoreEndpoint, CoreEventSubscrip
 import type { AppConfig, AppConfigPatch } from '$lib/types/app-config';
 import type { LogEntry, LogAppend, LogQuery } from '$lib/types/logs';
 import type { GuiCapabilitySnapshot, InteractionSurfaceSnapshot } from '$lib/types/capability';
-import type { SelfTestSnapshot, ConnectionStatus, ProxyModeStatus, CoreOverview, TrafficStats, PolicyGroup, PolicyOutbound, ProxyMode, GuiCoreHealth, GuiZeroCapabilities, GuiFeatureStatus, GuiPolicySelectionResult, GuiConnectionList, GuiConnectionItem, GuiConnectionCloseResult } from '$lib/types/gui-api';
+import type { ConfigProxyNode, SelfTestSnapshot, ConnectionStatus, ProxyModeStatus, CoreOverview, TrafficStats, PolicyGroup, PolicyOutbound, ProxyMode, GuiCoreHealth, GuiZeroCapabilities, GuiFeatureStatus, GuiPolicySelectionResult, GuiConnectionList, GuiConnectionItem, GuiConnectionCloseResult } from '$lib/types/gui-api';
 
 export type { CoreProcessStatus, CoreCallResult, CoreEndpoint, CoreEventSubscription, CoreConfigSnapshot, CoreConfigExportResult, CoreIpcOptions, AppError, CoreKernelInfo, GuiCapabilitySnapshot, InteractionSurfaceSnapshot };
 
@@ -286,6 +286,10 @@ export async function getGuiCoreOverview(): Promise<CoreOverview> {
 export async function getGuiTrafficStats(): Promise<TrafficStats> {
   const raw = await invoke<Record<string, unknown>>('gui_traffic_snapshot');
   return mapTrafficStats(raw);
+}
+
+export async function getConfigProxyNodes(): Promise<ConfigProxyNode[]> {
+  return invoke<ConfigProxyNode[]>('gui_proxy_nodes');
 }
 
 export async function getGuiPolicyGroups(): Promise<PolicyGroup[]> {

@@ -180,6 +180,18 @@ pub struct GuiPolicyMember {
     pub delay_ms: Option<u64>,
 }
 
+/// Proxy node extracted from the active proxy config file (static data).
+/// Available even when the core isn't running — used for the node list
+/// and selector dropdown.  Runtime status (selected, latency, alive) is
+/// layered on top from the core's Policies query when connected.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigProxyNode {
+    pub tag: String,
+    pub protocol: String,
+    pub is_selector: bool,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiConnectionListOptions {

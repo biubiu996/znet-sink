@@ -4,9 +4,9 @@ use tauri::{AppHandle, Manager, State};
 use crate::errors::{AppError, AppResult};
 use crate::models::core_process::CoreProcessState;
 use crate::models::gui_core::{
-    GuiConnection, GuiConnectionCloseResult, GuiConnectionList, GuiConnectionListOptions,
-    GuiCoreHealth, GuiCoreOverview, GuiFeatureStatus, GuiPolicyGroup, GuiPolicySelectionResult,
-    GuiTrafficSnapshot, GuiTrafficStats, GuiZeroCapabilities,
+    ConfigProxyNode, GuiConnection, GuiConnectionCloseResult, GuiConnectionList,
+    GuiConnectionListOptions, GuiCoreHealth, GuiCoreOverview, GuiFeatureStatus, GuiPolicyGroup,
+    GuiPolicySelectionResult, GuiTrafficSnapshot, GuiTrafficStats, GuiZeroCapabilities,
 };
 use crate::services::{core_process, interaction_mode, zero_adapter};
 use crate::state::app_state::AppState;
@@ -116,6 +116,13 @@ pub async fn gui_stack_status(state: State<'_, AppState>) -> AppResult<GuiFeatur
 pub async fn gui_rule_status(state: State<'_, AppState>) -> AppResult<GuiFeatureStatus> {
     interaction_mode::require_pro_mode(state.inner(), "rules")?;
     zero_adapter::rule_status(state.inner()).await
+}
+
+/// Return the node list directly from the active proxy config file.
+/// Does NOT require the core to be running — this is static config data.
+#[tauri::command]
+pub fn gui_proxy_nodes(state: State<'_, AppState>) -> AppResult<Vec<ConfigProxyNode>> {
+    zero_adapter::proxy_nodes_from_config(state.inner())
 }
 
 async fn ensure_core_ready(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<()> {

@@ -4,10 +4,10 @@ use crate::errors::{AppError, AppResult};
 use crate::models::{
     core::CoreIpcOptions,
     gui_core::{
-        GuiCapabilityEndpoint, GuiConnection, GuiConnectionCloseResult, GuiConnectionList,
-        GuiConnectionListOptions, GuiCoreHealth, GuiCoreOverview, GuiFeatureStatus, GuiPolicyGroup,
-        GuiPolicyMember, GuiPolicySelectionResult, GuiTrafficRates, GuiTrafficSnapshot,
-        GuiTrafficStats, GuiZeroCapabilities,
+        ConfigProxyNode, GuiCapabilityEndpoint, GuiConnection, GuiConnectionCloseResult,
+        GuiConnectionList, GuiConnectionListOptions, GuiCoreHealth, GuiCoreOverview,
+        GuiFeatureStatus, GuiPolicyGroup, GuiPolicyMember, GuiPolicySelectionResult,
+        GuiTrafficRates, GuiTrafficSnapshot, GuiTrafficStats, GuiZeroCapabilities,
     },
 };
 use crate::services::{common, common::lock, control_plane, core_config, core_process};
@@ -105,6 +105,48 @@ pub async fn zero_capabilities(state: &AppState) -> AppResult<GuiZeroCapabilitie
 
 pub async fn capability_feature_keys(state: &AppState) -> AppResult<Vec<String>> {
     Ok(zero_capabilities(state).await?.features)
+}
+
+/// Extract proxy nodes from the active proxy config file content.
+/// This is STATIC data — the config JSON on disk — so it works even
+/// when the core isn't running.  Runtime status (selected, latency,
+/// alive) is layered on top from the Policies query when connected.
+pub fn proxy_nodes_from_config(state: &AppState) -> AppResult<Vec<ConfigProxyNode>> {
+    let active = common::lock(state.proxy_configs(), "proxy_config")?
+        .iter()
+        .find(|p| p.active)
+        .cloned();
+
+    let Some(active) = active else {
+        return Ok(Vec::new());
+    };
+
+    let Some(content) = &active.content else {
+        return Ok(Vec::new());
+    };
+
+    let outbounds = content
+        .get("outbounds")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(outbounds
+        .iter()
+        .filter_map(|node| {
+            let tag = node.get("tag").and_then(|v| v.as_str())?;
+            let protocol = node
+                .get("type")
+                .or_else(|| node.get("protocol"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            Some(ConfigProxyNode {
+                tag: tag.to_string(),
+                protocol: protocol.to_string(),
+                is_selector: protocol.eq_ignore_ascii_case("selector"),
+            })
+        })
+        .collect())
 }
 
 pub async fn policy_groups(state: &AppState) -> AppResult<Vec<GuiPolicyGroup>> {

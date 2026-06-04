@@ -62,8 +62,8 @@
   const proxyEnabled = $derived(guiState.isSystemProxyEnabled);
   const isCoreRunning = $derived(guiState.isProcessRunning);
   const isPowerBusy = $derived(guiState.isConnecting || guiState.isDisconnecting);
-  const hasConfig = $derived(guiState.proxyMode != null);
-  const hasNodes = $derived(guiState.policyGroups.length > 0);
+  const hasConfig = $derived(guiState.configNodes.length > 0 || guiState.proxyMode != null);
+  const hasNodes = $derived(guiState.policyGroups.length > 0 || guiState.configNodes.length > 0);
   const powerLabel = $derived(
     guiState.isConnecting ? '启用中' :
     guiState.isDisconnecting ? '关闭中' :
@@ -72,40 +72,60 @@
     '开启服务'
   );
 
-  // Current node for display (uses typed policy groups, not raw IPC data)
+  // Current node for display — config nodes as primary source,
+  // runtime data (selected, delay, alive) from policy groups when connected.
   const activeNodeName = $derived.by(() => {
-    const groups = guiState.policyGroups;
-    for (const g of groups) {
+    // Prefer selected node from runtime policy groups
+    for (const g of guiState.policyGroups) {
       if (g.selected) return g.selected;
     }
-    return groups[0]?.outbounds[0]?.tag ?? null;
+    // Fall back to first non-selector config node
+    return guiState.configNodes.find(n => !n.isSelector)?.tag ?? null;
   });
 
-  // Active node info for Pro mode card (group name, delay, alive, etc.)
+  // Active node info for Pro mode card
   const currentNode = $derived.by(() => {
-    const groups = guiState.policyGroups;
-    for (const g of groups) {
+    // Try runtime data first
+    for (const g of guiState.policyGroups) {
       if (g.selected) {
         const member = g.outbounds.find(o => o.tag === g.selected);
         if (member) return { group: g.name, tag: member.tag, type: member.type, delayMs: member.delayMs, alive: member.alive };
       }
     }
-    const first = groups[0];
-    if (first?.outbounds.length) {
-      const m = first.outbounds[0];
-      return { group: first.name, tag: m.tag, type: m.type, delayMs: m.delayMs, alive: m.alive };
-    }
+    // Fall back to config node
+    const cn = guiState.configNodes.find(n => !n.isSelector);
+    if (cn) return { group: '', tag: cn.tag, type: cn.protocol };
     return null;
   });
 
-  // Flat node list from policy groups for dropdown
+  // Flat node list for dropdown — config nodes as base, runtime data when connected
   const dropdownGroups = $derived.by(() => {
     const groups = guiState.policyGroups;
-    return groups.map(g => ({
-      name: g.name,
-      selected: g.selected,
-      nodes: g.outbounds.map(o => ({ tag: o.tag, type: o.type, delayMs: o.delayMs, alive: o.alive })),
-    }));
+    if (groups.length > 0) {
+      return groups.map(g => ({
+        name: g.name,
+        selected: g.selected,
+        nodes: g.outbounds.map(o => ({ tag: o.tag, type: o.type, delayMs: o.delayMs, alive: o.alive })),
+      }));
+    }
+    // Fall back to config nodes (no core required)
+    const selectorNodes = guiState.configNodes.filter(n => n.isSelector);
+    const regularNodes = guiState.configNodes.filter(n => !n.isSelector);
+    if (selectorNodes.length > 0) {
+      return selectorNodes.map(s => ({
+        name: s.tag,
+        selected: null as string | null,
+        nodes: regularNodes.map(n => ({ tag: n.tag, type: n.protocol })),
+      }));
+    }
+    if (regularNodes.length > 0) {
+      return [{
+        name: '节点',
+        selected: null as string | null,
+        nodes: regularNodes.map(n => ({ tag: n.tag, type: n.protocol })),
+      }];
+    }
+    return [];
   });
 
   // Close dropdown on outside click

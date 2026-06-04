@@ -14,10 +14,12 @@ import {
   guiSetProxyMode,
   getGuiCoreOverview,
   getGuiPolicyGroups,
+  getConfigProxyNodes,
 } from './core';
 import { error as toastError, success as toastSuccess } from './toast.svelte';
 import { coreEvents } from './core-events.svelte';
 import type {
+  ConfigProxyNode,
   SelfTestSnapshot,
   ConnectionStatus,
   ProxyModeStatus,
@@ -34,6 +36,7 @@ class GuiStateStore {
   coreOverview = $state<CoreOverview | null>(null);
   policyGroups = $state<PolicyGroup[]>([]);
   tunStatus = $state<GuiFeatureStatus | null>(null);
+  configNodes = $state<ConfigProxyNode[]>([]);
 
   isLoading = $state(false);
   isConnecting = $state(false);
@@ -60,6 +63,7 @@ class GuiStateStore {
       this.refreshConnectionStatus(),
       this.refreshProxyMode(),
       this.refreshCoreOverview(),
+      this.refreshConfigNodes(),
       this.refreshPolicyGroups(),
       this.refreshTunStatus(),
     ]);
@@ -105,6 +109,16 @@ class GuiStateStore {
       this.coreOverview = await getGuiCoreOverview();
     } catch {
       this.coreOverview = null;
+    }
+  }
+
+  async refreshConfigNodes() {
+    try {
+      this.configNodes = await getConfigProxyNodes();
+      console.warn('[gui-state] config nodes loaded:', this.configNodes.length);
+    } catch (e: any) {
+      console.warn('[gui-state] config nodes failed:', this.errorMessage(e));
+      this.configNodes = [];
     }
   }
 
