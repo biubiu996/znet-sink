@@ -108,6 +108,7 @@ pub async fn capability_feature_keys(state: &AppState) -> AppResult<Vec<String>>
 }
 
 pub async fn policy_groups(state: &AppState) -> AppResult<Vec<GuiPolicyGroup>> {
+    eprintln!("[ZNet] policy_groups CALLED");
     crate::services::logs::znet_log(
         Some(state),
         crate::models::logs::LogLevel::Info,

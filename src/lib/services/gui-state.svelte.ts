@@ -111,10 +111,10 @@ class GuiStateStore {
   async refreshPolicyGroups() {
     try {
       const groups = await getGuiPolicyGroups();
-      console.debug('[gui-state] policy groups loaded:', groups.length, 'groups');
+      console.warn('[gui-state] policy groups loaded:', groups.length, 'groups');
       this.policyGroups = groups;
     } catch (e: any) {
-      console.debug('[gui-state] policy groups failed:', this.errorMessage(e));
+      console.warn('[gui-state] policy groups failed:', this.errorMessage(e));
       this.policyGroups = [];
     }
   }

@@ -41,6 +41,7 @@ pub async fn gui_traffic_snapshot(state: State<'_, AppState>) -> AppResult<GuiTr
 
 #[tauri::command]
 pub async fn gui_policy_groups(state: State<'_, AppState>) -> AppResult<Vec<GuiPolicyGroup>> {
+    eprintln!("[ZNet] gui_policy_groups COMMAND INVOKED");
     zero_adapter::policy_groups(state.inner()).await
 }
 
