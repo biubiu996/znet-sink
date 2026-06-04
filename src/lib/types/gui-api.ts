@@ -63,6 +63,8 @@ export interface TrafficStats {
 export interface PolicyOutbound {
   tag: string;
   type: string;
+  delayMs?: number;
+  alive?: boolean;
 }
 
 export interface PolicyGroup {

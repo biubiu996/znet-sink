@@ -70,16 +70,28 @@
     '开启服务'
   );
 
-  // Current node for display
+  // Current node for display (uses typed policy groups, not raw IPC data)
   const activeNodeName = $derived.by(() => {
     const groups = guiState.policyGroups;
-    if (groups.length === 0) {
-      const nodes = overviewData.proxyNodes;
-      const sel = nodes.find(n => n.domain === 'selected');
-      return sel?.name ?? nodes[0]?.name ?? null;
-    }
     for (const g of groups) {
       if (g.selected) return g.selected;
+    }
+    return groups[0]?.outbounds[0]?.tag ?? null;
+  });
+
+  // Active node info for Pro mode card (group name, delay, alive, etc.)
+  const currentNode = $derived.by(() => {
+    const groups = guiState.policyGroups;
+    for (const g of groups) {
+      if (g.selected) {
+        const member = g.outbounds.find(o => o.tag === g.selected);
+        if (member) return { group: g.name, tag: member.tag, type: member.type, delayMs: member.delayMs, alive: member.alive };
+      }
+    }
+    const first = groups[0];
+    if (first?.outbounds.length) {
+      const m = first.outbounds[0];
+      return { group: first.name, tag: m.tag, type: m.type, delayMs: m.delayMs, alive: m.alive };
     }
     return null;
   });
@@ -87,19 +99,11 @@
   // Flat node list from policy groups for dropdown
   const dropdownGroups = $derived.by(() => {
     const groups = guiState.policyGroups;
-    if (groups.length > 0) {
-      return groups.map(g => ({
-        name: g.name,
-        selected: g.selected,
-        nodes: g.outbounds.map(o => ({ tag: o.tag, type: o.type })),
-      }));
-    }
-    // Fallback: flat list from overviewData
-    return [{
-      name: '节点',
-      selected: overviewData.proxyNodes.find(n => n.domain === 'selected')?.name ?? null,
-      nodes: overviewData.proxyNodes.map(n => ({ tag: n.name, type: n.protocol })),
-    }];
+    return groups.map(g => ({
+      name: g.name,
+      selected: g.selected,
+      nodes: g.outbounds.map(o => ({ tag: o.tag, type: o.type, delayMs: o.delayMs, alive: o.alive })),
+    }));
   });
 
   // Close dropdown on outside click
@@ -262,15 +266,28 @@
                 管理
               </button>
             </div>
-            {#if overviewData.proxyNodes.length > 0}
-              {@const activeNode = overviewData.proxyNodes.find(n => n.domain === 'selected') ?? overviewData.proxyNodes[0]}
+            {#if currentNode}
               <div class="flex-1 flex flex-col justify-center min-h-0">
-                <span class="active-node-name truncate">{activeNode.name}</span>
-                <span class="active-node-meta">{activeNode.protocol} · {activeNode.delay > 0 ? `${activeNode.delay} ms` : '延迟未知'}</span>
+                <span class="active-node-name truncate">{currentNode.tag}</span>
+                <span class="active-node-meta">
+                  {currentNode.type}
+                  {#if currentNode.delayMs != null && currentNode.delayMs > 0}
+                    · {currentNode.delayMs} ms
+                  {:else}
+                    · 延迟未知
+                  {/if}
+                  {#if currentNode.alive === false}
+                    · <span class="text-destructive">离线</span>
+                  {/if}
+                </span>
+              </div>
+            {:else if guiState.isConnected}
+              <div class="flex-1 flex items-center justify-center text-xs text-muted-foreground">
+                等待节点数据…
               </div>
             {:else}
               <div class="flex-1 flex items-center justify-center text-xs text-muted-foreground">
-                等待节点数据…
+                未连接
               </div>
             {/if}
           </div>

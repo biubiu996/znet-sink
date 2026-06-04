@@ -4,7 +4,7 @@ import type { CoreProcessStatus, CoreCallResult, CoreEndpoint, CoreEventSubscrip
 import type { AppConfig, AppConfigPatch } from '$lib/types/app-config';
 import type { LogEntry, LogAppend, LogQuery } from '$lib/types/logs';
 import type { GuiCapabilitySnapshot, InteractionSurfaceSnapshot } from '$lib/types/capability';
-import type { SelfTestSnapshot, ConnectionStatus, ProxyModeStatus, CoreOverview, TrafficStats, PolicyGroup, ProxyMode, GuiCoreHealth, GuiZeroCapabilities, GuiFeatureStatus, GuiPolicySelectionResult, GuiConnectionList, GuiConnectionItem, GuiConnectionCloseResult } from '$lib/types/gui-api';
+import type { SelfTestSnapshot, ConnectionStatus, ProxyModeStatus, CoreOverview, TrafficStats, PolicyGroup, PolicyOutbound, ProxyMode, GuiCoreHealth, GuiZeroCapabilities, GuiFeatureStatus, GuiPolicySelectionResult, GuiConnectionList, GuiConnectionItem, GuiConnectionCloseResult } from '$lib/types/gui-api';
 
 export type { CoreProcessStatus, CoreCallResult, CoreEndpoint, CoreEventSubscription, CoreConfigSnapshot, CoreConfigExportResult, CoreIpcOptions, AppError, CoreKernelInfo, GuiCapabilitySnapshot, InteractionSurfaceSnapshot };
 
@@ -425,17 +425,19 @@ function mapPolicyGroups(raw: Record<string, unknown>[]): PolicyGroup[] {
       name: stringFrom(group, ['tag', 'policy_tag', 'policyTag', 'name', 'id']) ?? 'unknown',
       selected: stringFrom(group, ['selected', 'current', 'now', 'target']),
       outbounds: members
-        .map((member) => {
-          if (!member || typeof member !== 'object') return null;
+        .reduce((acc: PolicyOutbound[], member) => {
+          if (!member || typeof member !== 'object') return acc;
           const item = member as Record<string, unknown>;
           const tag = stringFrom(item, ['tag', 'target_tag', 'targetTag', 'name', 'id', 'target']);
-          if (!tag) return null;
-          return {
+          if (!tag) return acc;
+          acc.push({
             tag,
             type: stringFrom(item, ['kind', 'type', 'protocol']) ?? 'unknown',
-          };
-        })
-        .filter((item): item is { tag: string; type: string } => Boolean(item)),
+            delayMs: numberFrom(item, ['delayMs', 'delay_ms', 'latency', 'latencyMs', 'latency_ms']),
+            alive: boolFrom(item, ['alive', 'healthy', 'available']),
+          });
+          return acc;
+        }, []),
     };
   });
 }
