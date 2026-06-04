@@ -78,27 +78,27 @@ pub async fn request(frame: Value, options: Option<CoreIpcOptions>) -> AppResult
 }
 
 pub async fn get_capabilities(options: Option<CoreIpcOptions>) -> AppResult<CoreCallResult> {
-    query(json!("Capabilities"), options).await
+    query(json!({"type":"capabilities"}), options).await
 }
 
 pub async fn get_health(options: Option<CoreIpcOptions>) -> AppResult<CoreCallResult> {
-    query(json!("Health"), options).await
+    query(json!({"type":"health"}), options).await
 }
 
 pub async fn get_config(options: Option<CoreIpcOptions>) -> AppResult<CoreCallResult> {
-    query(json!("Config"), options).await
+    query(json!({"type":"config"}), options).await
 }
 
 pub async fn get_runtime(options: Option<CoreIpcOptions>) -> AppResult<CoreCallResult> {
-    query(json!("Runtime"), options).await
+    query(json!({"type":"runtime"}), options).await
 }
 
 pub async fn get_stats(options: Option<CoreIpcOptions>) -> AppResult<CoreCallResult> {
-    query(json!("Stats"), options).await
+    query(json!({"type":"stats"}), options).await
 }
 
 pub async fn get_policies(options: Option<CoreIpcOptions>) -> AppResult<CoreCallResult> {
-    query(json!("Policies"), options).await
+    query(json!({"type":"policies"}), options).await
 }
 
 pub async fn select_policy(

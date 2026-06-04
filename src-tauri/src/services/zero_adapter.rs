@@ -65,37 +65,19 @@ pub async fn core_overview(state: &AppState) -> AppResult<GuiCoreOverview> {
 
 /// Query the core's detailed health info (version, uptime, etc.).
 ///
-/// Prefer [`core_readiness_health`] for liveness checks — it pings first to
-/// avoid wasting a pipe instance on a potentially unsupported query type.
+/// Prefer [`core_readiness_health`] for liveness checks — it pings first.
 pub async fn core_health(state: &AppState) -> AppResult<GuiCoreHealth> {
-    // Use a moderate timeout (1.5s) so the core has time to respond even
-    // when it synthesises the Health object from multiple internal sources,
-    // but retry loops won't block for the full default 3s.
-    let value = query_result_with_timeout(state, json!("Health"), 1_500).await?;
+    let value = query_result_with_timeout(state, json!({"type":"health"}), 1_500).await?;
     Ok(parse_health(&value))
 }
 
-/// Fast liveness check that avoids exhausting pipe instances.
-///
-/// Pings first — ping is always supported and the core always responds
-/// immediately, so the pipe instance is never left in a stale state.
-/// Only then optionally enriches with the detailed Health query.
-///
-/// Legacy core versions may not support the `Health` query type, causing
-/// every `core_health` call to time out and leave a connected-but-abandoned
-/// pipe instance on the server side.  With enough rapid retries the named
-/// pipe runs out of available instances and `CreateFileW` returns
-/// ERROR_PIPE_BUSY (231).
+/// Fast liveness check — pings first, then optionally enriches with the
+/// detailed Health query for version and uptime metadata.
 pub async fn core_readiness_health(state: &AppState) -> AppResult<GuiCoreHealth> {
-    // Ping first: always supported, always gets a clean response, never
-    // leaves a stale pipe instance.
     let ping = control_plane::ping(default_options(state)?).await?;
     unwrap_call_result(ping.response, ping.error)?;
 
-    // Enrich with detailed health info if the core supports it.
-    // A longer timeout is fine here — this is optional enrichment, and we
-    // already know the core is alive from the ping above.
-    match query_result_with_timeout(state, json!("Health"), 2_000).await {
+    match query_result_with_timeout(state, json!({"type":"health"}), 2_000).await {
         Ok(value) => Ok(parse_health(&value)),
         Err(_) => Ok(GuiCoreHealth {
             healthy: true,
@@ -106,7 +88,7 @@ pub async fn core_readiness_health(state: &AppState) -> AppResult<GuiCoreHealth>
 }
 
 pub async fn traffic_stats(state: &AppState) -> AppResult<GuiTrafficStats> {
-    let value = query_result(state, json!("Stats")).await?;
+    let value = query_result(state, json!({"type":"stats"})).await?;
     Ok(parse_stats(&value))
 }
 
@@ -117,7 +99,7 @@ pub async fn traffic_snapshot(state: &AppState) -> AppResult<GuiTrafficSnapshot>
 }
 
 pub async fn zero_capabilities(state: &AppState) -> AppResult<GuiZeroCapabilities> {
-    let value = query_result(state, json!("Capabilities")).await?;
+    let value = query_result(state, json!({"type":"capabilities"})).await?;
     Ok(parse_capabilities(&value, None))
 }
 
@@ -126,7 +108,7 @@ pub async fn capability_feature_keys(state: &AppState) -> AppResult<Vec<String>>
 }
 
 pub async fn policy_groups(state: &AppState) -> AppResult<Vec<GuiPolicyGroup>> {
-    let value = query_result(state, json!("Policies")).await?;
+    let value = query_result(state, json!({"type":"policies"})).await?;
     Ok(parse_policy_groups(&value))
 }
 
@@ -174,10 +156,9 @@ pub async fn connections(
     let value = query_result(
         state,
         json!({
-            "ActiveFlows": {
-                "limit": limit,
-                "filter": Value::Object(filter),
-            }
+            "type": "active_flows",
+            "limit": limit,
+            "filter": Value::Object(filter),
         }),
     )
     .await?;
@@ -187,7 +168,7 @@ pub async fn connections(
 
 pub async fn connection_detail(state: &AppState, flow_id: String) -> AppResult<GuiConnection> {
     let flow_id = normalize_non_empty(flow_id, "flowId")?;
-    let value = query_result(state, json!({ "Flow": { "flow_id": flow_id } })).await?;
+    let value = query_result(state, json!({ "type": "flow", "flow_id": flow_id })).await?;
     parse_connection(&value).ok_or_else(|| AppError::invalid_argument("core returned invalid flow"))
 }
 
@@ -211,7 +192,7 @@ pub async fn dns_status(state: &AppState) -> AppResult<GuiFeatureStatus> {
 pub async fn tun_status(state: &AppState) -> AppResult<GuiFeatureStatus> {
     let fallback = feature_status(state, "tun", &["tun", "tun-status", "tun-snapshot"]).await;
 
-    for request in [json!("TunStatus"), json!("Tun")] {
+    for request in [json!({"type":"tun_status"})] {
         if let Ok(value) = query_result(state, request).await {
             return Ok(parse_feature_runtime_status("tun", &value, fallback.as_ref().ok()));
         }
