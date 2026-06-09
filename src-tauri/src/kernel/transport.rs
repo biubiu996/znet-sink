@@ -48,8 +48,8 @@ pub struct EventStream {
 
 /// Return the platform-specific default endpoint for the given kernel name.
 ///
-/// On Windows, uses a well-known named pipe: `\\.\pipe\{name}-control`.
-/// On Unix, resolves `<executable_dir>/{name}-control.sock`.
+/// On Windows, uses a well-known named pipe: `\\.\pipe\zero-control`.
+/// On Unix, uses the Zero daemon default: `~/.zero/control.sock`.
 pub fn default_endpoint(kernel_name: &str) -> AppResult<CoreEndpoint> {
     Ok(CoreEndpoint {
         transport: transport_name(),
@@ -138,12 +138,21 @@ fn default_socket_path(kernel_name: &str) -> AppResult<String> {
 
 #[cfg(unix)]
 fn default_socket_path(kernel_name: &str) -> AppResult<String> {
-    Ok(default_socket_path_for_executable(
-        std::env::current_exe().ok().as_deref(),
-        kernel_name,
-    ))
+    // Default Zero daemon socket: ~/.zero/control.sock
+    let home = dirs::home_dir().ok_or_else(|| AppError {
+        code: "internal",
+        message: "cannot determine home directory for default socket path".to_string(),
+        details: None,
+    })?;
+    Ok(home
+        .join(".zero")
+        .join(format!("{kernel_name}-control.sock"))
+        .to_string_lossy()
+        .to_string())
 }
 
+/// Compute a GUI-managed socket path relative to the kernel executable.
+/// Used when spawning a managed kernel with `--control-socket` override.
 #[cfg(unix)]
 pub fn default_socket_path_for_executable(
     executable: Option<&std::path::Path>,

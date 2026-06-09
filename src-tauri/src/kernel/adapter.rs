@@ -10,9 +10,10 @@
 use crate::errors::AppResult;
 use crate::models::core::CoreIpcOptions;
 use crate::models::gui_core::{
+    GuiConfigPlanApplyResult, ConfigProxyNode,
     GuiConnection, GuiConnectionCloseResult, GuiConnectionList, GuiConnectionListOptions,
     GuiCoreHealth, GuiFeatureStatus, GuiPolicyGroup, GuiPolicySelectionResult,
-    GuiTargetProbeResult, GuiTrafficStats, GuiZeroCapabilities, ConfigProxyNode,
+    GuiTargetProbeResult, GuiTrafficStats, GuiZeroCapabilities,
 };
 
 use serde_json::Value;
@@ -22,10 +23,12 @@ use serde_json::Value;
 /// Methods are grouped into:
 /// - **Health & capabilities** — `health`, `capabilities`, `readiness_health`
 /// - **Traffic** — `traffic_stats`
-/// - **Policies** — `policy_groups`, `select_policy`, `probe_target`
-/// - **Connections** — `connections`, `connection_detail`, `close_connection`
+/// - **Policies** — `policy_groups`, `select_policy`, `probe_target`, `probe_policy`
+/// - **Connections** — `connections`, `recent_connections`, `connection_detail`, `close_connection`
+/// - **Config** — `apply_config`, `validate_config`, `set_mode`
+/// - **Diagnostics** — `dns_lookup`, `trace_route`
 /// - **Features** — `tun_status`, `enable_tun`, `disable_tun`, etc.
-/// - **Config** — `proxy_nodes_from_config`, `policy_groups_from_config`
+/// - **Static** — `proxy_nodes_from_config`, `policy_groups_from_config`
 ///
 /// The adapter receives `CoreIpcOptions` (resolved externally from `AppState`)
 /// so it never depends on GUI state directly.
@@ -65,6 +68,9 @@ pub trait KernelAdapter {
         options: CoreIpcOptions,
     ) -> AppResult<GuiPolicySelectionResult>;
 
+    /// Probe a url_test policy group (trigger latency measurement).
+    async fn probe_policy(&self, policy_tag: String, options: CoreIpcOptions) -> AppResult<Value>;
+
     /// Probe a single target for reachability and latency.
     async fn probe_target(
         &self,
@@ -76,6 +82,13 @@ pub trait KernelAdapter {
 
     /// Active connections / flows.
     async fn connections(
+        &self,
+        options: Option<GuiConnectionListOptions>,
+        ipc_options: CoreIpcOptions,
+    ) -> AppResult<GuiConnectionList>;
+
+    /// Recently completed connections / flows.
+    async fn recent_connections(
         &self,
         options: Option<GuiConnectionListOptions>,
         ipc_options: CoreIpcOptions,
@@ -94,6 +107,49 @@ pub trait KernelAdapter {
         flow_id: String,
         options: CoreIpcOptions,
     ) -> AppResult<GuiConnectionCloseResult>;
+
+    // ── Config ──────────────────────────────────────────────────
+
+    /// Hot-apply a full config without restarting the kernel.
+    async fn apply_config(&self, config: Value, options: CoreIpcOptions) -> AppResult<Value>;
+
+    /// Validate a config without applying it.
+    async fn validate_config(&self, config: Value, options: CoreIpcOptions) -> AppResult<Value>;
+
+    /// Dry-run config apply — returns impact analysis (hot-reload vs restart).
+    async fn plan_apply_config(
+        &self,
+        config: Value,
+        options: CoreIpcOptions,
+    ) -> AppResult<GuiConfigPlanApplyResult>;
+
+    /// Set the global routing mode at runtime (hot-switch).
+    async fn set_mode(
+        &self,
+        mode: String,
+        outbound: Option<String>,
+        options: CoreIpcOptions,
+    ) -> AppResult<Value>;
+
+    // ── Diagnostics ─────────────────────────────────────────────
+
+    /// DNS lookup diagnostic.
+    async fn dns_lookup(&self, hostname: String, options: CoreIpcOptions) -> AppResult<Value>;
+
+    /// Route trace diagnostic.
+    async fn trace_route(
+        &self,
+        target: String,
+        port: u16,
+        protocol: Option<String>,
+        options: CoreIpcOptions,
+    ) -> AppResult<Value>;
+
+    /// Event sink delivery status.
+    async fn sinks(&self, options: CoreIpcOptions) -> AppResult<Value>;
+
+    /// Diagnostics overview.
+    async fn diagnostics(&self, options: CoreIpcOptions) -> AppResult<Value>;
 
     // ── Feature status ──────────────────────────────────────────
 

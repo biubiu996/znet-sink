@@ -25,7 +25,7 @@ const MAX_CONNECTION_LIMIT: u32 = 500;
 
 /// Query detailed kernel health (version, uptime, etc.).
 pub async fn core_health(options: Option<CoreIpcOptions>) -> AppResult<GuiCoreHealth> {
-    let value = query_result(json!({"health": {}}), options).await?;
+    let value = query_variant(json!({"health": {}}), "health", options).await?;
     Ok(parse_health(&value))
 }
 
@@ -34,7 +34,7 @@ pub async fn core_readiness_health(options: Option<CoreIpcOptions>) -> AppResult
     let ping = protocol::ping(options.clone()).await?;
     unwrap_call_result(ping.response, ping.error)?;
 
-    match query_result_with_timeout(json!({"health": {}}), 2_000, options).await {
+    match query_variant_with_timeout(json!({"health": {}}), "health", 2_000, options).await {
         Ok(value) => Ok(parse_health(&value)),
         Err(_) => Ok(GuiCoreHealth {
             healthy: true,
@@ -46,13 +46,13 @@ pub async fn core_readiness_health(options: Option<CoreIpcOptions>) -> AppResult
 
 /// Query traffic counters.
 pub async fn traffic_stats(options: Option<CoreIpcOptions>) -> AppResult<GuiTrafficStats> {
-    let value = query_result(json!({"stats": {}}), options).await?;
+    let value = query_variant(json!({"stats": {}}), "stats", options).await?;
     Ok(parse_stats(&value))
 }
 
 /// Query kernel capabilities surface.
 pub async fn zero_capabilities(options: Option<CoreIpcOptions>) -> AppResult<GuiZeroCapabilities> {
-    let value = query_result(json!({"capabilities": {}}), options).await?;
+    let value = query_variant(json!({"capabilities": {}}), "capabilities", options).await?;
     Ok(parse_capabilities(&value, None))
 }
 
@@ -63,7 +63,7 @@ pub async fn capability_feature_keys(options: Option<CoreIpcOptions>) -> AppResu
 
 /// Query all policy groups.
 pub async fn policy_groups(options: Option<CoreIpcOptions>) -> AppResult<Vec<GuiPolicyGroup>> {
-    let value = query_result(json!({"policies": {}}), options).await?;
+    let value = query_variant(json!({"policies": {}}), "policies", options).await?;
     Ok(parse_policy_groups(&value))
 }
 
@@ -89,13 +89,14 @@ pub async fn connections(
         filter.insert("principal_key".to_string(), json!(principal_key));
     }
 
-    let value = query_result(
+    let value = query_variant(
         json!({
             "active_flows": {
                 "limit": limit,
                 "filter": Value::Object(filter),
             }
         }),
+        "active_flows",
         ipc_options,
     )
     .await?;
@@ -109,7 +110,7 @@ pub async fn connection_detail(
     options: Option<CoreIpcOptions>,
 ) -> AppResult<GuiConnection> {
     let flow_id = super::parsing::normalize_non_empty(flow_id, "flowId")?;
-    let value = query_result(json!({"flow": {"flow_id": flow_id}}), options).await?;
+    let value = query_variant(json!({"flow": {"flow_id": flow_id}}), "flow", options).await?;
     parse_connection(&value)
         .ok_or_else(|| crate::errors::AppError::invalid_argument("core returned invalid flow"))
 }
@@ -150,7 +151,8 @@ pub async fn dns_status(options: Option<CoreIpcOptions>) -> AppResult<GuiFeature
 pub async fn tun_status(options: Option<CoreIpcOptions>) -> AppResult<GuiFeatureStatus> {
     let fallback = feature_status("tun", &["tun", "tun-status", "tun-snapshot"], options.clone()).await;
 
-    if let Ok(value) = query_result(json!({"tun_status": {}}), options.clone()).await {
+    // Primary: use the documented tun_status query with variant unwrapping
+    if let Ok(value) = query_variant(json!({"tun_status": {}}), "tun_status", options.clone()).await {
         return Ok(parse_feature_runtime_status(
             "tun",
             &value,
@@ -158,6 +160,7 @@ pub async fn tun_status(options: Option<CoreIpcOptions>) -> AppResult<GuiFeature
         ));
     }
 
+    // Fallback: try the legacy tun.status command for older kernel versions
     if let Ok(value) =
         super::commands::run_command("tun.status", json!({}), options).await
     {
@@ -191,23 +194,93 @@ pub async fn rule_status(options: Option<CoreIpcOptions>) -> AppResult<GuiFeatur
     .await
 }
 
+/// Query the kernel's current config snapshot.
+pub async fn query_config(options: Option<CoreIpcOptions>) -> AppResult<Value> {
+    query_variant(json!({"config": {}}), "config", options).await
+}
+
+/// Query recently completed connections (flows).
+pub async fn recent_connections(
+    list_options: Option<GuiConnectionListOptions>,
+    ipc_options: Option<CoreIpcOptions>,
+) -> AppResult<GuiConnectionList> {
+    let options = list_options.unwrap_or(GuiConnectionListOptions {
+        limit: None,
+        inbound_tag: None,
+        principal_key: None,
+    });
+    let limit = options
+        .limit
+        .unwrap_or(DEFAULT_CONNECTION_LIMIT)
+        .clamp(1, MAX_CONNECTION_LIMIT);
+    let mut filter = Map::new();
+    if let Some(inbound_tag) = normalize_optional(options.inbound_tag) {
+        filter.insert("inbound_tag".to_string(), json!(inbound_tag));
+    }
+    if let Some(principal_key) = normalize_optional(options.principal_key) {
+        filter.insert("principal_key".to_string(), json!(principal_key));
+    }
+
+    let value = query_variant(
+        json!({
+            "recent_flows": {
+                "limit": limit,
+                "filter": Value::Object(filter),
+            }
+        }),
+        "recent_flows",
+        ipc_options,
+    )
+    .await?;
+
+    Ok(parse_connection_list(&value, limit))
+}
+
+/// Query event sink delivery status.
+pub async fn sinks(options: Option<CoreIpcOptions>) -> AppResult<Value> {
+    query_variant(json!({"sinks": {}}), "sinks", options).await
+}
+
+/// Query diagnostics overview.
+pub async fn diagnostics(options: Option<CoreIpcOptions>) -> AppResult<Value> {
+    query_variant(json!({"diagnostics": {}}), "diagnostics", options).await
+}
+
 // ── Internal helpers ────────────────────────────────────────────────
 
-async fn query_result(
+async fn query_variant(
     request: Value,
+    variant: &str,
     options: Option<CoreIpcOptions>,
 ) -> AppResult<Value> {
     let call = protocol::query(request, options).await?;
-    unwrap_call_result(call.response, call.error)
+    let response = unwrap_call_result(call.response, call.error)?;
+    unwrap_query_variant_wrapped(response, variant)
 }
 
-async fn query_result_with_timeout(
+async fn query_variant_with_timeout(
     request: Value,
+    variant: &str,
     timeout_ms: u64,
     options: Option<CoreIpcOptions>,
 ) -> AppResult<Value> {
     let mut opts = options.unwrap_or_default();
     opts.timeout_ms = Some(timeout_ms);
     let call = protocol::query(request, Some(opts)).await?;
-    unwrap_call_result(call.response, call.error)
+    let response = unwrap_call_result(call.response, call.error)?;
+    unwrap_query_variant_wrapped(response, variant)
+}
+
+/// Unwrap the externally-tagged QueryResponse variant from a `result` value.
+/// IPC Query responses wrap data as `result.{variant_key}`, e.g.
+/// `result.health`, `result.active_flows`, etc.
+/// Falls back to the raw value if the variant key is not present.
+fn unwrap_query_variant_wrapped(result: Value, variant: &str) -> AppResult<Value> {
+    if let Some(obj) = result.as_object() {
+        if let Some(variant_data) = obj.get(variant) {
+            return Ok(variant_data.clone());
+        }
+    }
+    // Fallback: result is already the inner data (flat/old shape)
+    Ok(result)
 }

@@ -8,9 +8,11 @@ use serde_json::Value;
 
 use crate::errors::{AppError, AppResult};
 use crate::models::gui_core::{
-    GuiCapabilityEndpoint, GuiConnection, GuiConnectionCloseResult, GuiConnectionList,
+    GuiCapabilityEndpoint, GuiConfigImpactItem, GuiConfigPlanApplyResult,
+    GuiConnection, GuiConnectionCloseResult, GuiConnectionList,
     GuiCoreHealth, GuiFeatureStatus, GuiPolicyGroup, GuiPolicyMember,
-    GuiPolicySelectionResult, GuiTargetProbeResult, GuiTrafficStats, GuiZeroCapabilities,
+    GuiPolicySelectionResult, GuiTargetProbeResult, GuiProtocolCapability,
+    GuiTrafficStats, GuiZeroCapabilities,
 };
 
 // ── Response envelope helpers ───────────────────────────────────────
@@ -45,6 +47,35 @@ pub(crate) fn unwrap_core_envelope(response: Value) -> AppResult<Value> {
     }
 
     Ok(Value::Object(object.clone()))
+}
+
+/// Strip the `{"ok":bool, "result":{variant_key:...}}` envelope AND
+/// unwrap the externally-tagged QueryResponse variant.
+///
+/// IPC Query responses use `result.health`, `result.active_flows`, etc.
+/// This helper strips both the envelope and the variant wrapper.
+/// Falls back to the raw `result` when the variant key is not present
+/// (backward-compatible with older kernels or flat shapes).
+///
+/// Production code uses the split approach (unwrap_core_envelope + local
+/// variant unwrapping in queries.rs). This combined helper is kept for
+/// test ergonomics.
+#[allow(dead_code)]
+pub(crate) fn unwrap_query_variant(
+    response: Value,
+    variant: &str,
+) -> AppResult<Value> {
+    let inner = unwrap_core_envelope(response)?;
+
+    // Try to unwrap the variant key: result.{variant}
+    if let Some(obj) = inner.as_object() {
+        if let Some(variant_data) = obj.get(variant) {
+            return Ok(variant_data.clone());
+        }
+    }
+
+    // Fallback: result is already the inner data (flat shape or old kernel)
+    Ok(inner)
 }
 
 // ── Parsers ─────────────────────────────────────────────────────────
@@ -93,6 +124,8 @@ pub(crate) fn parse_capabilities(value: &Value, error: Option<String>) -> GuiZer
         permissions: string_array_at(value, &["permissions"]),
         adapters: endpoint_array_at(value, "adapters"),
         sinks: endpoint_array_at(value, "sinks"),
+        protocols: protocol_array_at(value, "protocols"),
+        build_features: string_array_at(value, &["build_features", "buildFeatures"]),
         error,
     }
 }
@@ -317,6 +350,54 @@ pub(crate) fn parse_feature_runtime_status(
     }
 }
 
+/// Parse `config.plan_apply` response into a structured impact analysis.
+///
+/// Expected kernel response shape:
+/// ```json
+/// {
+///   "valid": true,
+///   "hot_reload": [{ "section": "outbounds", "tags": [...], "detail": "..." }],
+///   "requires_restart": [{ "section": "listeners", "tags": [...], "detail": "..." }],
+///   "warnings": ["..."],
+///   "errors": ["..."]
+/// }
+/// ```
+///
+/// The parser is tolerant — missing fields default to empty; unknown keys
+/// are ignored. This lets the kernel evolve the response format without
+/// breaking older GUI builds.
+pub(crate) fn parse_plan_apply_result(value: &Value) -> GuiConfigPlanApplyResult {
+    let result = nested_value(value, &["result"]).unwrap_or(value);
+
+    GuiConfigPlanApplyResult {
+        valid: bool_at(result, &["valid"]).unwrap_or(true),
+        hot_reload: parse_impact_items(result, "hot_reload"),
+        requires_restart: parse_impact_items(result, "requires_restart"),
+        warnings: string_array_at(result, &["warnings"]),
+        errors: string_array_at(result, &["errors"]),
+    }
+}
+
+fn parse_impact_items(value: &Value, key: &str) -> Vec<GuiConfigImpactItem> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    Some(GuiConfigImpactItem {
+                        section: string_at(item, &["section", "key", "name"])?,
+                        tags: string_array_at(item, &["tags", "affected"]),
+                        detail: string_at(item, &["detail", "description", "message"])
+                            .unwrap_or_default(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 // ── Utility functions ───────────────────────────────────────────────
 
 pub(crate) fn nested_value<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
@@ -428,6 +509,31 @@ fn endpoint_array_at(value: &Value, key: &str) -> Vec<GuiCapabilityEndpoint> {
                     Some(GuiCapabilityEndpoint {
                         kind: string_at(item, &["kind", "type", "name"])?,
                         enabled: bool_at(item, &["enabled"]).unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn protocol_array_at(value: &Value, key: &str) -> Vec<GuiProtocolCapability> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    Some(GuiProtocolCapability {
+                        name: string_at(item, &["name", "protocol"])?,
+                        status: string_at(item, &["status"])
+                            .unwrap_or_else(|| "supported".to_string()),
+                        inbound_tcp: bool_at(item, &["inbound_tcp"]).unwrap_or(false),
+                        inbound_udp: bool_at(item, &["inbound_udp"]).unwrap_or(false),
+                        outbound_tcp: bool_at(item, &["outbound_tcp"]).unwrap_or(false),
+                        outbound_udp: bool_at(item, &["outbound_udp"]).unwrap_or(false),
+                        mux: bool_at(item, &["mux"]).unwrap_or(false),
+                        limitations: string_array_at(item, &["limitations"]),
                     })
                 })
                 .collect()

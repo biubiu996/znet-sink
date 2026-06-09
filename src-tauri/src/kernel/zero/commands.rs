@@ -9,12 +9,13 @@ use crate::errors::AppResult;
 use crate::kernel::protocol;
 use crate::models::core::CoreIpcOptions;
 use crate::models::gui_core::{
-    GuiConnectionCloseResult, GuiFeatureStatus, GuiPolicySelectionResult, GuiTargetProbeResult,
+    GuiConfigPlanApplyResult, GuiConnectionCloseResult, GuiFeatureStatus,
+    GuiPolicySelectionResult, GuiTargetProbeResult,
 };
 
 use super::parsing::{
     normalize_non_empty, parse_connection_close, parse_feature_runtime_status,
-    parse_policy_selection, parse_target_probe, unwrap_call_result,
+    parse_plan_apply_result, parse_policy_selection, parse_target_probe, unwrap_call_result,
 };
 
 /// Switch the selected outbound in a policy group.
@@ -36,6 +37,15 @@ pub async fn select_policy(
     .await?;
 
     Ok(parse_policy_selection(&value, policy_tag, target_tag))
+}
+
+/// Probe a url_test policy group (triggers latency measurement).
+pub async fn probe_policy(
+    policy_tag: String,
+    options: Option<CoreIpcOptions>,
+) -> AppResult<Value> {
+    let policy_tag = normalize_non_empty(policy_tag, "policyTag")?;
+    run_command("policies.probe", json!({ "policy_tag": policy_tag }), options).await
 }
 
 /// Probe a single target for reachability and latency.
@@ -62,6 +72,90 @@ pub async fn close_connection(
     let flow_id = normalize_non_empty(flow_id, "flowId")?;
     let value = run_command("flows.close", json!({ "flow_id": flow_id }), options).await?;
     Ok(parse_connection_close(&value, flow_id))
+}
+
+/// Hot-apply a full config without restarting the kernel.
+pub async fn apply_config(
+    config: Value,
+    options: Option<CoreIpcOptions>,
+) -> AppResult<Value> {
+    if !config.is_object() {
+        return Err(crate::errors::AppError::invalid_argument(
+            "config must be a JSON object",
+        ));
+    }
+    run_command("config.apply", json!({ "config": config }), options).await
+}
+
+/// Validate a config without applying it.
+pub async fn validate_config(
+    config: Value,
+    options: Option<CoreIpcOptions>,
+) -> AppResult<Value> {
+    if !config.is_object() {
+        return Err(crate::errors::AppError::invalid_argument(
+            "config must be a JSON object",
+        ));
+    }
+    run_command("config.validate", json!({ "config": config }), options).await
+}
+
+/// Dry-run config apply — returns impact analysis without applying changes.
+///
+/// Sends `config.plan_apply` to the kernel, which returns a structured
+/// breakdown of which sections can be hot-reloaded and which require
+/// a kernel restart.
+pub async fn plan_apply_config(
+    config: Value,
+    options: Option<CoreIpcOptions>,
+) -> AppResult<GuiConfigPlanApplyResult> {
+    if !config.is_object() {
+        return Err(crate::errors::AppError::invalid_argument(
+            "config must be a JSON object",
+        ));
+    }
+    let value = run_command("config.plan_apply", json!({ "config": config }), options).await?;
+    Ok(parse_plan_apply_result(&value))
+}
+
+/// Set the global routing mode at runtime (hot-switch, no restart).
+pub async fn set_mode(
+    mode: String,
+    outbound: Option<String>,
+    options: Option<CoreIpcOptions>,
+) -> AppResult<Value> {
+    let mut params = Map::new();
+    params.insert("mode".to_string(), json!(mode));
+    if let Some(outbound) = outbound {
+        params.insert("outbound".to_string(), json!(outbound));
+    }
+    run_command("mode.set", Value::Object(params), options).await
+}
+
+/// DNS lookup diagnostic.
+pub async fn dns_lookup(
+    hostname: String,
+    options: Option<CoreIpcOptions>,
+) -> AppResult<Value> {
+    let hostname = normalize_non_empty(hostname, "hostname")?;
+    run_command("diagnostics.dns_lookup", json!({ "hostname": hostname }), options).await
+}
+
+/// Route trace diagnostic.
+pub async fn trace_route(
+    target: String,
+    port: u16,
+    protocol: Option<String>,
+    options: Option<CoreIpcOptions>,
+) -> AppResult<Value> {
+    let target = normalize_non_empty(target, "target")?;
+    let mut params = Map::new();
+    params.insert("target".to_string(), json!(target));
+    params.insert("port".to_string(), json!(port));
+    if let Some(protocol) = protocol {
+        params.insert("protocol".to_string(), json!(protocol));
+    }
+    run_command("diagnostics.trace_route", Value::Object(params), options).await
 }
 
 /// Enable TUN virtual network interface.

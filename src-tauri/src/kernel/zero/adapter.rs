@@ -10,10 +10,10 @@ use crate::errors::AppResult;
 use crate::kernel::adapter::KernelAdapter;
 use crate::models::core::CoreIpcOptions;
 use crate::models::gui_core::{
-    ConfigProxyNode, GuiConnection, GuiConnectionCloseResult, GuiConnectionList,
-    GuiConnectionListOptions, GuiCoreHealth, GuiFeatureStatus, GuiPolicyGroup,
-    GuiPolicySelectionResult, GuiTargetProbeResult, GuiTrafficRates, GuiTrafficSnapshot,
-    GuiTrafficStats, GuiZeroCapabilities,
+    ConfigProxyNode, GuiConfigPlanApplyResult, GuiConnection, GuiConnectionCloseResult,
+    GuiConnectionList, GuiConnectionListOptions, GuiCoreHealth, GuiFeatureStatus,
+    GuiPolicyGroup, GuiPolicySelectionResult, GuiTargetProbeResult, GuiTrafficRates,
+    GuiTrafficSnapshot, GuiTrafficStats, GuiZeroCapabilities,
 };
 
 use super::{commands, config, queries};
@@ -31,14 +31,38 @@ impl ZeroAdapter {
 
     /// Build the composite overview used by the dashboard.
     ///
-    /// Queries health, stats, capabilities, and policy groups in
-    /// sequence, tolerating partial failures. This is **not** on the
-    /// trait because it aggregates multiple queries.
+    /// Does a fast health ping first.  If the kernel is unreachable the
+    /// remaining queries (capabilities, config, stats, policy groups) are
+    /// skipped entirely so the caller doesn't block for 15 s on sequential
+    /// timeouts.
     pub async fn core_overview(
         &self,
         process_running: bool,
         options: CoreIpcOptions,
     ) -> CoreOverviewResult {
+        // ── Fast health check — bail out early if kernel is down ──
+        let health = match self.readiness_health(options.clone()).await {
+            Ok(health) => Some(health),
+            Err(error) => {
+                // Kernel unreachable — no point querying the rest
+                return CoreOverviewResult {
+                    process_running,
+                    available: false,
+                    health: None,
+                    config: None,
+                    stats: GuiTrafficStats::default(),
+                    policy_groups: Vec::new(),
+                    capabilities: GuiZeroCapabilities {
+                        available: false,
+                        error: Some(error.message.clone()),
+                        ..GuiZeroCapabilities::default()
+                    },
+                    last_error: Some(error.message),
+                };
+            }
+        };
+
+        // ── Kernel is reachable — gather remaining data ──
         let capabilities = self.capabilities(options.clone()).await;
         let mut last_error = capabilities.as_ref().err().map(|e| e.message.clone());
         let capabilities = capabilities.unwrap_or_else(|error| GuiZeroCapabilities {
@@ -47,8 +71,8 @@ impl ZeroAdapter {
             ..GuiZeroCapabilities::default()
         });
 
-        let health = match self.readiness_health(options.clone()).await {
-            Ok(health) => Some(health),
+        let config = match self.query_config(options.clone()).await {
+            Ok(config) => Some(config),
             Err(error) => {
                 last_error.get_or_insert(error.message);
                 None
@@ -76,6 +100,7 @@ impl ZeroAdapter {
             process_running,
             available,
             health,
+            config,
             stats,
             policy_groups,
             capabilities,
@@ -90,6 +115,7 @@ pub struct CoreOverviewResult {
     pub process_running: bool,
     pub available: bool,
     pub health: Option<GuiCoreHealth>,
+    pub config: Option<serde_json::Value>,
     pub stats: GuiTrafficStats,
     pub policy_groups: Vec<GuiPolicyGroup>,
     pub capabilities: GuiZeroCapabilities,
@@ -136,6 +162,10 @@ impl KernelAdapter for ZeroAdapter {
         commands::probe_target(target_tag, Some(options)).await
     }
 
+    async fn probe_policy(&self, policy_tag: String, options: CoreIpcOptions) -> AppResult<Value> {
+        commands::probe_policy(policy_tag, Some(options)).await
+    }
+
     async fn connections(
         &self,
         list_options: Option<GuiConnectionListOptions>,
@@ -158,6 +188,61 @@ impl KernelAdapter for ZeroAdapter {
         options: CoreIpcOptions,
     ) -> AppResult<GuiConnectionCloseResult> {
         commands::close_connection(flow_id, Some(options)).await
+    }
+
+    async fn recent_connections(
+        &self,
+        list_options: Option<GuiConnectionListOptions>,
+        ipc_options: CoreIpcOptions,
+    ) -> AppResult<GuiConnectionList> {
+        queries::recent_connections(list_options, Some(ipc_options)).await
+    }
+
+    async fn apply_config(&self, config: Value, options: CoreIpcOptions) -> AppResult<Value> {
+        commands::apply_config(config, Some(options)).await
+    }
+
+    async fn validate_config(&self, config: Value, options: CoreIpcOptions) -> AppResult<Value> {
+        commands::validate_config(config, Some(options)).await
+    }
+
+    async fn plan_apply_config(
+        &self,
+        config: Value,
+        options: CoreIpcOptions,
+    ) -> AppResult<GuiConfigPlanApplyResult> {
+        commands::plan_apply_config(config, Some(options)).await
+    }
+
+    async fn set_mode(
+        &self,
+        mode: String,
+        outbound: Option<String>,
+        options: CoreIpcOptions,
+    ) -> AppResult<Value> {
+        commands::set_mode(mode, outbound, Some(options)).await
+    }
+
+    async fn dns_lookup(&self, hostname: String, options: CoreIpcOptions) -> AppResult<Value> {
+        commands::dns_lookup(hostname, Some(options)).await
+    }
+
+    async fn trace_route(
+        &self,
+        target: String,
+        port: u16,
+        protocol: Option<String>,
+        options: CoreIpcOptions,
+    ) -> AppResult<Value> {
+        commands::trace_route(target, port, protocol, Some(options)).await
+    }
+
+    async fn sinks(&self, options: CoreIpcOptions) -> AppResult<Value> {
+        queries::sinks(Some(options)).await
+    }
+
+    async fn diagnostics(&self, options: CoreIpcOptions) -> AppResult<Value> {
+        queries::diagnostics(Some(options)).await
     }
 
     async fn dns_status(&self, options: CoreIpcOptions) -> AppResult<GuiFeatureStatus> {
@@ -197,6 +282,13 @@ impl KernelAdapter for ZeroAdapter {
         config_content: &Value,
     ) -> AppResult<Vec<GuiPolicyGroup>> {
         Ok(config::policy_groups_from_config(config_content))
+    }
+}
+
+impl ZeroAdapter {
+    /// Query the kernel's current config snapshot (not on trait — used by core_overview).
+    pub async fn query_config(&self, options: CoreIpcOptions) -> AppResult<Value> {
+        queries::query_config(Some(options)).await
     }
 }
 
