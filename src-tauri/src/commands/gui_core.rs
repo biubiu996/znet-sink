@@ -6,10 +6,10 @@ use crate::kernel::zero::{self, ZeroAdapter, TrafficSample, build_traffic_snapsh
 use crate::kernel::adapter::KernelAdapter;
 use crate::models::core_process::CoreProcessState;
 use crate::models::gui_core::{
-    ConfigProxyNode, GuiConnection, GuiConnectionCloseResult, GuiConnectionList,
-    GuiConnectionListOptions, GuiCoreHealth, GuiCoreOverview, GuiFeatureStatus, GuiPolicyGroup,
-    GuiPolicySelectionResult, GuiTargetProbeResult, GuiTrafficSnapshot, GuiTrafficStats,
-    GuiZeroCapabilities,
+    ConfigProxyNode, GuiConfigPlanApplyResult, GuiConnection, GuiConnectionCloseResult,
+    GuiConnectionList, GuiConnectionListOptions, GuiCoreHealth, GuiCoreOverview, GuiFeatureStatus,
+    GuiPolicyGroup, GuiPolicySelectionResult, GuiTargetProbeResult, GuiTrafficSnapshot,
+    GuiTrafficStats, GuiZeroCapabilities,
 };
 use crate::services::{core_config, core_process, interaction_mode, probe};
 use crate::services::common;
@@ -37,6 +37,7 @@ pub async fn gui_core_overview(state: State<'_, AppState>) -> AppResult<GuiCoreO
     ).await;
 
     let health = result.health;
+    let config = result.config;
     let capabilities = result.capabilities;
     let stats = result.stats;
     let policy_groups = result.policy_groups;
@@ -47,6 +48,7 @@ pub async fn gui_core_overview(state: State<'_, AppState>) -> AppResult<GuiCoreO
         process,
         available,
         health,
+        config,
         stats,
         policy_groups,
         capabilities,
@@ -93,7 +95,6 @@ pub async fn gui_traffic_snapshot(state: State<'_, AppState>) -> AppResult<GuiTr
 
 #[tauri::command]
 pub async fn gui_policy_groups(state: State<'_, AppState>) -> AppResult<Vec<GuiPolicyGroup>> {
-    eprintln!("[ZNet] gui_policy_groups COMMAND INVOKED");
     let adapter = ZeroAdapter::new();
     let opts = default_opts(state.inner());
 
@@ -270,6 +271,115 @@ pub async fn gui_client_probe_start(
     ));
 
     Ok(())
+}
+
+/// Apply a config to the running kernel without restart (hot-reload).
+#[tauri::command]
+pub async fn gui_apply_config(
+    state: State<'_, AppState>,
+    config: serde_json::Value,
+) -> AppResult<serde_json::Value> {
+    interaction_mode::require_pro_mode(state.inner(), "apply_config")?;
+    let opts = default_opts(state.inner());
+    ZeroAdapter::new().apply_config(config, opts).await
+}
+
+/// Validate a config without applying it.
+#[tauri::command]
+pub async fn gui_validate_config(
+    state: State<'_, AppState>,
+    config: serde_json::Value,
+) -> AppResult<serde_json::Value> {
+    interaction_mode::require_pro_mode(state.inner(), "validate_config")?;
+    let opts = default_opts(state.inner());
+    ZeroAdapter::new().validate_config(config, opts).await
+}
+
+/// Dry-run config apply — returns impact analysis without applying changes.
+///
+/// Sends `config.plan_apply` to the kernel, which returns a structured
+/// breakdown of which sections can be hot-reloaded and which require
+/// a kernel restart.
+#[tauri::command]
+pub async fn gui_plan_apply_config(
+    state: State<'_, AppState>,
+    config: serde_json::Value,
+) -> AppResult<GuiConfigPlanApplyResult> {
+    interaction_mode::require_pro_mode(state.inner(), "plan_apply_config")?;
+    let opts = default_opts(state.inner());
+    ZeroAdapter::new().plan_apply_config(config, opts).await
+}
+
+/// Set the global routing mode at runtime (hot-switch, no kernel restart).
+#[tauri::command]
+pub async fn gui_set_mode(
+    state: State<'_, AppState>,
+    mode: String,
+    outbound: Option<String>,
+) -> AppResult<serde_json::Value> {
+    let opts = default_opts(state.inner());
+    ZeroAdapter::new().set_mode(mode, outbound, opts).await
+}
+
+/// Trigger a url_test probe on a policy group.
+#[tauri::command]
+pub async fn gui_probe_policy(
+    state: State<'_, AppState>,
+    policy_tag: String,
+) -> AppResult<serde_json::Value> {
+    let opts = default_opts(state.inner());
+    ZeroAdapter::new().probe_policy(policy_tag, opts).await
+}
+
+/// DNS lookup diagnostic.
+#[tauri::command]
+pub async fn gui_dns_lookup(
+    state: State<'_, AppState>,
+    hostname: String,
+) -> AppResult<serde_json::Value> {
+    interaction_mode::require_pro_mode(state.inner(), "dns_lookup")?;
+    let opts = default_opts(state.inner());
+    ZeroAdapter::new().dns_lookup(hostname, opts).await
+}
+
+/// Route trace diagnostic.
+#[tauri::command]
+pub async fn gui_trace_route(
+    state: State<'_, AppState>,
+    target: String,
+    port: Option<u16>,
+    protocol: Option<String>,
+) -> AppResult<serde_json::Value> {
+    interaction_mode::require_pro_mode(state.inner(), "trace_route")?;
+    let opts = default_opts(state.inner());
+    ZeroAdapter::new().trace_route(target, port.unwrap_or(80), protocol, opts).await
+}
+
+/// Query recently completed connections.
+#[tauri::command]
+pub async fn gui_recent_connections(
+    state: State<'_, AppState>,
+    options: Option<GuiConnectionListOptions>,
+) -> AppResult<GuiConnectionList> {
+    interaction_mode::require_pro_mode(state.inner(), "recent_connections")?;
+    let opts = default_opts(state.inner());
+    ZeroAdapter::new().recent_connections(options, opts).await
+}
+
+/// Query event sink delivery status.
+#[tauri::command]
+pub async fn gui_sinks(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
+    interaction_mode::require_pro_mode(state.inner(), "sinks")?;
+    let opts = default_opts(state.inner());
+    ZeroAdapter::new().sinks(opts).await
+}
+
+/// Query diagnostics overview.
+#[tauri::command]
+pub async fn gui_diagnostics(state: State<'_, AppState>) -> AppResult<serde_json::Value> {
+    interaction_mode::require_pro_mode(state.inner(), "diagnostics")?;
+    let opts = default_opts(state.inner());
+    ZeroAdapter::new().diagnostics(opts).await
 }
 
 async fn ensure_core_ready(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<()> {

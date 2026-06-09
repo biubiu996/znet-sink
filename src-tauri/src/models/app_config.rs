@@ -56,7 +56,7 @@ impl Default for AppCoreConfig {
         Self {
             kernel: default_kernel(),
             auto_connect: true,
-            auto_start: false,
+            auto_start: true,
             executable_path: None,
             download_url: None,
             config_path: None,

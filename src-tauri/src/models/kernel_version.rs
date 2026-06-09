@@ -52,4 +52,6 @@ pub struct KernelInstallResult {
 pub struct KernelVersionDetect {
     pub version: Option<String>,
     pub source: String,
+    pub executable_path: Option<String>,
+    pub executable_exists: bool,
 }

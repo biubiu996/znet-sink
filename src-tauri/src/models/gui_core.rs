@@ -11,6 +11,8 @@ pub struct GuiCoreOverview {
     pub process: CoreProcessStatus,
     pub available: bool,
     pub health: Option<GuiCoreHealth>,
+    /// Kernel config snapshot (listeners, outbounds, rules count, etc.)
+    pub config: Option<serde_json::Value>,
     pub stats: GuiTrafficStats,
     pub policy_groups: Vec<GuiPolicyGroup>,
     pub capabilities: GuiZeroCapabilities,
@@ -149,6 +151,11 @@ pub struct GuiZeroCapabilities {
     pub permissions: Vec<String>,
     pub adapters: Vec<GuiCapabilityEndpoint>,
     pub sinks: Vec<GuiCapabilityEndpoint>,
+    /// Protocol capability matrix — inbound/outbound TCP/UDP support,
+    /// MUX status, and limitation codes.
+    pub protocols: Vec<GuiProtocolCapability>,
+    /// Build-time compiled features (e.g. "tun", "shadowsocks").
+    pub build_features: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -157,6 +164,25 @@ pub struct GuiZeroCapabilities {
 pub struct GuiCapabilityEndpoint {
     pub kind: String,
     pub enabled: bool,
+}
+
+/// Protocol capability entry from the kernel's capabilities response.
+/// Reports whether a specific protocol is supported, partial, or experimental,
+/// along with TCP/UDP inbound/outbound support and any limitations.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiProtocolCapability {
+    /// Protocol name (e.g. "shadowsocks", "vmess", "trojan").
+    pub name: String,
+    /// "supported" | "partial" | "experimental"
+    pub status: String,
+    pub inbound_tcp: bool,
+    pub inbound_udp: bool,
+    pub outbound_tcp: bool,
+    pub outbound_udp: bool,
+    pub mux: bool,
+    /// Opaque limitation codes from the kernel (e.g. "no_udp_relay").
+    pub limitations: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -266,6 +292,36 @@ pub struct GuiFeatureStatus {
     pub enabled: bool,
     pub state: String,
     pub reason: Option<String>,
+}
+
+/// A single impact item from `config.plan_apply` — one section of config
+/// that will be affected by the proposed change.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiConfigImpactItem {
+    /// Top-level config section (e.g. "outbounds", "listeners", "rules", "tun").
+    pub section: String,
+    /// Specific tags/identifiers within the section that changed.
+    pub tags: Vec<String>,
+    /// Human-readable description of the change.
+    pub detail: String,
+}
+
+/// Result of `config.plan_apply` — a dry-run impact analysis before
+/// actually applying a config change to the running kernel.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiConfigPlanApplyResult {
+    /// Whether the proposed config is syntactically and semantically valid.
+    pub valid: bool,
+    /// Sections that can be hot-reloaded without restarting the kernel.
+    pub hot_reload: Vec<GuiConfigImpactItem>,
+    /// Sections that require a kernel restart to take effect.
+    pub requires_restart: Vec<GuiConfigImpactItem>,
+    /// Non-blocking warnings about side effects.
+    pub warnings: Vec<String>,
+    /// Validation errors (present when `valid` is false).
+    pub errors: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

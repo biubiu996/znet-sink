@@ -25,11 +25,80 @@ use crate::commands::rule_set as rule_set_commands;
 use crate::commands::subscription as subscription_commands;
 use crate::commands::system_proxy as system_proxy_commands;
 use crate::lifecycle::phases;
-use crate::services::{core_process, system_proxy_guard};
+use crate::services::{core_process, local_proxy, system_proxy_guard};
 use crate::kernel::adapter::KernelAdapter;
 use crate::state::app_state::AppState;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+fn toggle_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+        } else {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+}
+
+fn open_main_window_route(app: &tauri::AppHandle, tab: &str, section: Option<&str>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    let _ = app.emit(
+        "app:navigate",
+        serde_json::json!({ "tab": tab, "section": section }),
+    );
+}
+
+fn tray_start_core(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _ = core_process::start(app.clone(), state);
+    });
+}
+
+fn tray_stop_core(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _ = core_process::stop(state);
+    });
+}
+
+fn tray_restart_core(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _ = core_process::stop(state.clone());
+        let _ = core_process::start(app.clone(), state);
+    });
+}
+
+fn tray_enable_system_proxy(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _ = core_process::start(app.clone(), state.clone());
+        let host = state
+            .app_config()
+            .lock()
+            .map(|config| config.local_proxy.host.clone())
+            .unwrap_or_else(|_| "127.0.0.1".to_string());
+        let port = state
+            .app_config()
+            .lock()
+            .map(|config| config.local_proxy.port)
+            .unwrap_or(7890);
+        let _ = local_proxy::wait_until_listening(&host, port);
+        let _ = system_proxy_guard::enable_with_guard(&host, port);
+    });
+}
+
+fn tray_disable_system_proxy(_app: tauri::AppHandle) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = system_proxy_guard::disable_with_guard();
+    });
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -104,6 +173,7 @@ pub fn run() {
             core_process_commands::core_process_status,
             core_process_commands::core_process_start,
             core_process_commands::core_process_stop,
+            core_process_commands::core_process_restart,
             core_config_commands::core_config_export_active,
             core_config_commands::core_download_latest,
             gui_core_commands::gui_core_overview,
@@ -126,6 +196,16 @@ pub fn run() {
             gui_core_commands::gui_tun_disable,
             gui_core_commands::gui_stack_status,
             gui_core_commands::gui_rule_status,
+            gui_core_commands::gui_apply_config,
+            gui_core_commands::gui_validate_config,
+            gui_core_commands::gui_plan_apply_config,
+            gui_core_commands::gui_set_mode,
+            gui_core_commands::gui_probe_policy,
+            gui_core_commands::gui_dns_lookup,
+            gui_core_commands::gui_trace_route,
+            gui_core_commands::gui_recent_connections,
+            gui_core_commands::gui_sinks,
+            gui_core_commands::gui_diagnostics,
             gui_connection_commands::gui_connection_status,
             gui_connection_commands::gui_connect,
             gui_connection_commands::gui_disconnect,
@@ -163,15 +243,12 @@ pub fn run() {
             kernel_version_commands::kernel_install_version,
             kernel_version_commands::kernel_detect_version,
         ])
-        // ── Phase 5: Runtime — tray, auto-start, window ──
+        // ── Phase 5: Runtime — tray, kernel lifecycle, window ──
         .setup(|app| {
-            let auto_start = app
-                .state::<AppState>()
-                .app_config()
-                .lock()
-                .map(|config| config.core.auto_start)
-                .unwrap_or(false);
-            if auto_start {
+            // Always check kernel health on startup. If the kernel is already
+            // running (e.g. external daemon), just connect. If not, try to
+            // start a managed kernel when auto_start is enabled (default).
+            {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app_handle.state::<AppState>();
@@ -179,7 +256,38 @@ pub fn run() {
                     let opts = crate::services::core_config::ipc_options_from_app_config(
                         &state.app_config().lock().map(|c| c.core.clone()).unwrap_or_default()
                     );
+
+                    // Check if kernel is already running
                     if adapter.readiness_health(opts).await.is_ok() {
+                        eprintln!("[ZNet] kernel already running, connecting");
+
+                        // Update the process state so the UI reflects the
+                        // actual kernel status.  Without this the UI shows
+                        // "not started" even though the kernel is alive,
+                        // which confuses users and also means stop() won't
+                        // know to kill the external process.
+                        {
+                            let mut process = match state.core_process().lock() {
+                                Ok(p) => p,
+                                Err(_) => return,
+                            };
+                            process.status.state =
+                                crate::models::core_process::CoreProcessState::Running;
+                            process.status.kernel = "zero".to_string();
+                            // No child — we don't own this process, so
+                            // stop() will fall through to kill_external().
+                        }
+                        return;
+                    }
+
+                    // Kernel not running — check if auto_start is enabled
+                    let auto_start = state
+                        .app_config()
+                        .lock()
+                        .map(|config| config.core.auto_start)
+                        .unwrap_or(true);
+                    if !auto_start {
+                        eprintln!("[ZNet] auto_start disabled, not starting kernel");
                         return;
                     }
                     drop(state);
@@ -194,8 +302,26 @@ pub fn run() {
             }
 
             // System tray
-            let show_item = tauri::menu::MenuItemBuilder::new("显示")
+            let show_item = tauri::menu::MenuItemBuilder::new("显示/隐藏")
                 .id("show")
+                .build(app)?;
+            let enable_proxy_item = tauri::menu::MenuItemBuilder::new("开启系统代理")
+                .id("enable_proxy")
+                .build(app)?;
+            let disable_proxy_item = tauri::menu::MenuItemBuilder::new("关闭系统代理")
+                .id("disable_proxy")
+                .build(app)?;
+            let start_core_item = tauri::menu::MenuItemBuilder::new("启动内核")
+                .id("start_core")
+                .build(app)?;
+            let stop_core_item = tauri::menu::MenuItemBuilder::new("停止内核")
+                .id("stop_core")
+                .build(app)?;
+            let restart_core_item = tauri::menu::MenuItemBuilder::new("重启内核")
+                .id("restart_core")
+                .build(app)?;
+            let settings_item = tauri::menu::MenuItemBuilder::new("设置")
+                .id("settings")
                 .build(app)?;
             let quit_item = tauri::menu::MenuItemBuilder::new("退出")
                 .id("quit")
@@ -206,6 +332,15 @@ pub fn run() {
                 &[
                     &show_item,
                     &tauri::menu::PredefinedMenuItem::separator(app)?,
+                    &enable_proxy_item,
+                    &disable_proxy_item,
+                    &tauri::menu::PredefinedMenuItem::separator(app)?,
+                    &start_core_item,
+                    &stop_core_item,
+                    &restart_core_item,
+                    &tauri::menu::PredefinedMenuItem::separator(app)?,
+                    &settings_item,
+                    &tauri::menu::PredefinedMenuItem::separator(app)?,
                     &quit_item,
                 ],
             )?;
@@ -215,12 +350,13 @@ pub fn run() {
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&tray_menu)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
+                    "show" => toggle_main_window(app),
+                    "enable_proxy" => tray_enable_system_proxy(app.clone()),
+                    "disable_proxy" => tray_disable_system_proxy(app.clone()),
+                    "start_core" => tray_start_core(app.clone()),
+                    "stop_core" => tray_stop_core(app.clone()),
+                    "restart_core" => tray_restart_core(app.clone()),
+                    "settings" => open_main_window_route(app, "settings", Some("general")),
                     "quit" => {
                         app.exit(0);
                     }
@@ -234,14 +370,7 @@ pub fn run() {
                     } = event
                     {
                         if button == MouseButton::Left && button_state == MouseButtonState::Up {
-                            if let Some(window) = tray.app_handle().get_webview_window("main") {
-                                if window.is_visible().unwrap_or(false) {
-                                    let _ = window.hide();
-                                } else {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
-                                }
-                            }
+                            toggle_main_window(tray.app_handle());
                         }
                     }
                 })

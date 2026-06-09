@@ -27,9 +27,16 @@ pub async fn kernel_install_version(
 ) -> AppResult<KernelInstallResult> {
     interaction_mode::require_pro_mode(state.inner(), "coreConfig")?;
 
-    // Stop the running core so the old binary isn't locked during
+    // ── Stop the running core so the old binary isn't locked during
     // extraction.  On Windows a running .exe cannot be overwritten.
+    //
+    // 1. Try graceful stop (kills our managed child process).
+    // 2. Force-kill any remaining zero process (external or stale).
+    //    This also covers the case where the kernel was started by a
+    //    previous GUI session and the current one doesn't own the child.
     let _ = core_process::stop(state.clone());
+    let _ = core_process::kill_external(state.inner());
+
     let _ = logs::append_entry(
         state.inner(),
         LogSource::App,

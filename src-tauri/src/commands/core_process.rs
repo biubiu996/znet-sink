@@ -27,3 +27,16 @@ pub fn core_process_start(
 pub fn core_process_stop(state: State<'_, AppState>) -> AppResult<CoreProcessStatus> {
     core_process::stop(state)
 }
+
+/// Restart the managed kernel: stop the current process and start a new one.
+/// This is the recommended way for UI to refresh the kernel — regular stop
+/// is only for app shutdown.
+#[tauri::command]
+pub fn core_process_restart(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> AppResult<CoreProcessStatus> {
+    // Stop first, then start. Both are sync/blocking.
+    let _ = core_process::stop(state.clone());
+    core_process::start(app_handle, state)
+}
