@@ -20,6 +20,42 @@ fn subscription_parser_rejects_plain_json() {
 }
 
 #[test]
+fn subscription_parser_converts_clash_yaml() {
+    let parsed = parse_subscription_content(
+        r#"
+proxies:
+  - name: hk-1
+    type: ss
+    server: hk.example.com
+    port: 8388
+    cipher: aes-128-gcm
+    password: secret
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - hk-1
+      - DIRECT
+rules:
+  - DOMAIN-SUFFIX,example.com,Proxy
+  - GEOIP,CN,DIRECT
+  - MATCH,Proxy
+"#,
+        "auto",
+    )
+    .unwrap();
+
+    assert_eq!(parsed.format, "clash-yaml-converted");
+    assert_eq!(parsed.content["outbounds"][2]["tag"], "hk-1");
+    assert_eq!(parsed.content["outbounds"][2]["type"], "shadowsocks");
+    assert_eq!(parsed.content["outbound_groups"][0]["tag"], "Proxy");
+    assert_eq!(parsed.content["outbound_groups"][0]["outbounds"][1], "direct");
+    assert_eq!(parsed.content["route"]["rules"][0]["condition"]["type"], "domain_suffix");
+    assert_eq!(parsed.content["route"]["rules"][1]["action"]["outbound"], "direct");
+    assert_eq!(parsed.content["route"]["final"]["outbound"], "Proxy");
+}
+
+#[test]
 fn subscription_parser_rejects_unknown_format() {
     let error = parse_subscription_content("{}", "binary").unwrap_err();
 
