@@ -61,6 +61,10 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Tauri updater signing key — stored in GitHub Repository Secrets.
+          # Generate via: pnpm tauri signer generate -w ~/.tauri/znet-sink.key
+          # Then add the private key content to repo Settings > Secrets > TAURI_SIGNING_PRIVATE_KEY
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'v__VERSION__'
