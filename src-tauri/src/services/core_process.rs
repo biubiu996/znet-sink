@@ -28,21 +28,28 @@ pub(crate) fn kill_external(state: &AppState) -> AppResult<()> {
     let config = { lock(state.app_config(), "app_config")?.core.clone() };
     let snapshot = core_config::snapshot_from_config(&config)?;
 
-    let executable_name = snapshot
+    let configured_name = snapshot
         .executable_path
         .as_deref()
         .and_then(|path| std::path::Path::new(path).file_name())
         .and_then(|name| name.to_str())
         .map(|name| name.to_string());
 
-    let Some(executable_name) = executable_name else {
-        return Ok(());
+    // Always try to kill the default binary name as a fallback — the
+    // kernel may have been started by auto_start with a path that
+    // isn't (yet) recorded in the config.
+    let fallback = if cfg!(windows) {
+        "zero.exe".to_string()
+    } else {
+        "zero".to_string()
     };
+
+    let executable_name = configured_name.as_deref().unwrap_or(&fallback);
 
     #[cfg(windows)]
     {
         let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/IM", &executable_name])
+            .args(["/F", "/IM", executable_name])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
@@ -51,7 +58,7 @@ pub(crate) fn kill_external(state: &AppState) -> AppResult<()> {
     #[cfg(not(windows))]
     {
         let _ = std::process::Command::new("pkill")
-            .args(["-9", &executable_name])
+            .args(["-9", executable_name])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
@@ -75,18 +82,24 @@ pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<Cor
     let config = { lock(state.app_config(), "app_config")?.core.clone() };
     let snapshot = core_config::snapshot_from_config(&config)?;
 
-    // Require config_path — the kernel's `run` command needs a config file
-    if snapshot.config_path.is_none() {
-        let has_active = lock(state.proxy_configs(), "proxy_config")?
-            .iter()
-            .any(|p| p.active);
-        let hint = if has_active {
-            "有活跃代理配置但尚未导出，请先设置代理模式"
-        } else {
-            "没有活跃代理配置，请先创建并激活代理配置"
-        };
-        return Err(AppError::invalid_argument(hint));
-    }
+    // When no config_path exists, generate a minimal temp config so the
+    // kernel can start with its control plane enabled. The kernel enters
+    // a "waiting for config" state, and the GUI shows appropriate status.
+    let snapshot = if snapshot.config_path.is_none() {
+        let temp_path = core_config::write_minimal_temp_config()?;
+        {
+            let mut app_config = lock(state.app_config(), "app_config")?;
+            app_config.core.config_path = Some(
+                temp_path.to_string_lossy().to_string(),
+            );
+            let config_path = crate::services::app_config_store::default_config_path()?;
+            crate::services::app_config_store::save(&config_path, &app_config)?;
+        }
+        let config = { lock(state.app_config(), "app_config")?.core.clone() };
+        core_config::snapshot_from_config(&config)?
+    } else {
+        snapshot
+    };
 
     if let Err(error) = snapshot.validate_launchable() {
         let message = format!("failed to start core process: {error}");
@@ -316,6 +329,10 @@ pub fn stop(state: State<'_, AppState>) -> AppResult<CoreProcessStatus> {
     };
 
     let Some(mut child) = child else {
+        // No managed child — but the kernel might be an external process
+        // (e.g. started by a previous GUI session).  Force-kill it so the
+        // UI "stop" button actually works in that scenario.
+        let _ = kill_external(state.inner());
         proxy_result?;
         return refresh_status(state.inner());
     };

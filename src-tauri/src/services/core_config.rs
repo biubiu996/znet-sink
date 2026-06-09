@@ -187,13 +187,19 @@ fn resolve_working_dir(config: &AppCoreConfig, executable_path: Option<&Path>) -
         })
 }
 
-fn default_socket_path(config: &AppCoreConfig) -> Option<PathBuf> {
+/// Default socket path when user hasn't configured one explicitly.
+///
+/// On Windows, the named pipe (`\\.\pipe\zero-control`) is resolved by
+/// `transport::default_endpoint` — no file path needed here.
+/// On Unix, defaults to the Zero daemon path: `~/.zero/control.sock`.
+fn default_socket_path(_config: &AppCoreConfig) -> Option<PathBuf> {
     if cfg!(windows) {
         return None;
     }
 
-    resolve_executable_path(config)
-        .and_then(|path| path.parent().map(|parent| parent.join("zero-control.sock")))
+    dirs::home_dir().map(|home| {
+        home.join(".zero").join("zero-control.sock")
+    })
 }
 
 fn launch_args(config_path: Option<&Path>, socket: Option<&Path>) -> Vec<String> {
@@ -231,6 +237,32 @@ pub fn write_core_config(path: &Path, content: &serde_json::Value) -> AppResult<
 
 fn default_export_path() -> AppResult<PathBuf> {
     Ok(data_dir()?.join(EXPORTED_CORE_CONFIG_FILE))
+}
+
+/// Write a minimal temp config so the kernel can start its control plane
+/// even without any proxy configuration. The GUI shows "kernel running,
+/// no proxy config" instead of treating this as a startup failure.
+pub fn write_minimal_temp_config() -> AppResult<PathBuf> {
+    let path = data_dir()?.join("zero-temp-stub.json");
+    let minimal = serde_json::json!({
+        "inbounds": [],
+        "outbounds": [],
+        "outbound_groups": [],
+        "runtime": {},
+        "api": {
+            "control": {
+                "enabled": true,
+                "listen": { "address": "127.0.0.1", "port": 9090 }
+            }
+        },
+        "mode": { "type": "rule" },
+        "route": {
+            "rules": [],
+            "final": { "type": "direct" }
+        }
+    });
+    write_core_config(&path, &minimal)?;
+    Ok(path)
 }
 
 fn path_to_string(path: &Path) -> String {
