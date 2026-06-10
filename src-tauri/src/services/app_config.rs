@@ -52,6 +52,9 @@ pub fn update(state: State<'_, AppState>, patch: AppConfigPatch) -> AppResult<Ap
         if let Some(socket) = core.socket {
             config.core.socket = normalize_optional(socket);
         }
+        if let Some(v) = core.download_proxy_auto {
+            config.core.download_proxy_auto = v;
+        }
     }
 
     if let Some(logs) = patch.logs {

@@ -18,6 +18,8 @@ export interface AppCoreConfig {
   configPath?: string;
   workingDir?: string;
   socket?: string;
+  /** 管理流量是否自动跟随系统代理。默认 true */
+  downloadProxyAuto: boolean;
 }
 
 export interface AppLogConfig {
@@ -65,6 +67,7 @@ export interface AppCoreConfigPatch {
   configPath?: string | null;
   workingDir?: string | null;
   socket?: string | null;
+  downloadProxyAuto?: boolean;
 }
 
 export interface AppLogConfigPatch {

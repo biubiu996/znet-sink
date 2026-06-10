@@ -49,6 +49,11 @@ pub struct AppCoreConfig {
     pub working_dir: Option<String>,
     #[serde(default)]
     pub socket: Option<String>,
+    /// 管理流量是否自动跟随系统代理环境变量。
+    /// true（默认）= 自动，读 HTTPS_PROXY / HTTP_PROXY
+    /// false       = 直连，绕过一切代理
+    #[serde(default = "default_true")]
+    pub download_proxy_auto: bool,
 }
 
 impl Default for AppCoreConfig {
@@ -62,6 +67,7 @@ impl Default for AppCoreConfig {
             config_path: None,
             working_dir: None,
             socket: None,
+            download_proxy_auto: true,
         }
     }
 }
@@ -177,6 +183,7 @@ pub struct AppCoreConfigPatch {
     pub config_path: Option<Option<String>>,
     pub working_dir: Option<Option<String>>,
     pub socket: Option<Option<String>>,
+    pub download_proxy_auto: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

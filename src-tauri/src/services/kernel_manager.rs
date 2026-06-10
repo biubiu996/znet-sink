@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
@@ -22,12 +23,54 @@ const GITHUB_RELEASES_URL: &str =
 const PROGRESS_EVENT: &str = "kernel:download-progress";
 const CHUNK_SIZE: usize = 8 * 1024;
 const PROGRESS_INTERVAL: u64 = 64 * 1024;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600); // 10 min for large archives
 
-pub fn list_available_versions() -> AppResult<KernelVersionList> {
-    let client = reqwest::blocking::Client::builder()
+/// Build a blocking HTTP client for management traffic.
+///
+/// `proxy_auto`: when true (default) reads HTTPS_PROXY / HTTP_PROXY / ALL_PROXY
+/// from the environment; when false goes direct, bypassing the kernel's own
+/// system proxy to avoid circular dependency.
+fn build_http_client(proxy_auto: bool) -> AppResult<reqwest::blocking::Client> {
+    let mut builder = reqwest::blocking::Client::builder()
         .user_agent("znet-sink")
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(DOWNLOAD_TIMEOUT);
+
+    if proxy_auto {
+        let https_proxy = std::env::var("HTTPS_PROXY")
+            .or_else(|_| std::env::var("https_proxy"))
+            .or_else(|_| std::env::var("ALL_PROXY"))
+            .or_else(|_| std::env::var("all_proxy"))
+            .ok()
+            .filter(|v| !v.is_empty());
+        let http_proxy = std::env::var("HTTP_PROXY")
+            .or_else(|_| std::env::var("http_proxy"))
+            .or_else(|_| std::env::var("ALL_PROXY"))
+            .or_else(|_| std::env::var("all_proxy"))
+            .ok()
+            .filter(|v| !v.is_empty());
+
+        if let Some(ref url) = https_proxy {
+            if let Ok(p) = reqwest::Proxy::https(url) {
+                builder = builder.proxy(p);
+            }
+        }
+        if let Some(ref url) = http_proxy {
+            if let Ok(p) = reqwest::Proxy::http(url) {
+                builder = builder.proxy(p);
+            }
+        }
+        builder = builder.no_proxy();
+    }
+
+    builder
         .build()
-        .map_err(|e| AppError::internal(format!("failed to create http client: {e}")))?;
+        .map_err(|e| AppError::internal(format!("failed to create http client: {e}")))
+}
+
+pub fn list_available_versions(proxy_auto: bool) -> AppResult<KernelVersionList> {
+    let client = build_http_client(proxy_auto)?;
 
     let mut resp = client
         .get(GITHUB_RELEASES_URL)
@@ -62,6 +105,7 @@ pub fn install_version(
     download_url: String,
     expected_sha256: Option<String>,
     install_dir: Option<String>,
+    proxy_auto: bool,
     app: AppHandle,
 ) -> AppResult<KernelInstallResult> {
     let dir = resolve_install_dir(install_dir)?;
@@ -87,10 +131,7 @@ pub fn install_version(
     };
     let temp_file = dir.join(format!("zero-download.{}", ext));
 
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("znet-sink")
-        .build()
-        .map_err(|e| AppError::internal(format!("failed to create http client: {e}")))?;
+    let client = build_http_client(proxy_auto)?;
 
     let _ = crate::services::logs::append_entry(
         &app.state::<crate::state::app_state::AppState>(),
@@ -329,8 +370,11 @@ fn extract_semver(raw: &str) -> Option<String> {
     for token in raw.split_whitespace() {
         let candidate = token.trim_matches(|c: char| c == '(' || c == ')' || c == ',' || c == ';');
         let version_part = candidate.strip_prefix('v').unwrap_or(candidate);
+        // Require exactly 2 dots so we don't accidentally match IP
+        // addresses like "127.0.0.1" or "0.0.0.0" that show up in
+        // kernel startup / listening-on output.
         if version_part.starts_with(|c: char| c.is_ascii_digit())
-            && version_part.chars().filter(|&c| c == '.').count() >= 2
+            && version_part.chars().filter(|&c| c == '.').count() == 2
         {
             let semver: String = version_part
                 .chars()
