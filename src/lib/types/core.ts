@@ -64,6 +64,8 @@ export type GuiEventType =
   | 'tun.error'
   // v0.0.5+: Network stack (SystemStack / proxy)
   | 'stack.statusChanged'
+  // v0.0.11+: IPC client connection lifecycle
+  | 'core.ipcStatus'
   | 'core.unknownEvent';
 
 export interface GuiEventEnvelope {
@@ -140,6 +142,16 @@ export interface StackStatusEvent {
   state: 'started' | 'stopped' | 'degraded';
   mode?: string;
   message?: string;
+}
+
+// v0.0.11+: IPC client connection lifecycle
+export interface IpcStatusEvent {
+  /** Number of active IPC connections after this event. */
+  active: number;
+  /** Named pipe path (Windows) or peer address (Unix). */
+  pipe?: string;
+  /** Error details on abnormal disconnection. */
+  error?: string;
 }
 
 export interface AppError {

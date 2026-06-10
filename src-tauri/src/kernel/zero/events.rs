@@ -8,8 +8,9 @@ use serde_json::Value;
 
 use crate::models::gui_core::{
     GuiConfigChangedEvent, GuiCoreHealth, GuiEvent, GuiEventData,
-    GuiPolicyMember, GuiPolicyProbeCompletedEvent, GuiPolicySelectedEvent,
-    GuiStackStatusEvent, GuiTunStatusEvent, GuiUnknownEvent, GuiWarningEvent,
+    GuiIpcStatusEvent, GuiPolicyMember, GuiPolicyProbeCompletedEvent,
+    GuiPolicySelectedEvent, GuiStackStatusEvent, GuiTunStatusEvent,
+    GuiUnknownEvent, GuiWarningEvent,
 };
 
 use super::parsing::{normalize_version, parse_connection, parse_stats, string_at, u64_at};
@@ -52,6 +53,9 @@ pub fn gui_event_type(source_event_type: &str) -> &'static str {
         "tun.error" => "tun.error",
         // Network stack (SystemStack / proxy)
         "stack.started" | "stack.stopped" | "stack.degraded" => "stack.statusChanged",
+        // IPC client connection lifecycle (v0.0.11+)
+        "ipc.connected" => "core.ipcStatus",
+        "ipc.disconnected" => "core.ipcStatus",
         _ => "core.unknownEvent",
     }
 }
@@ -147,6 +151,17 @@ fn normalize_payload(source_event_type: &str, payload: &Value) -> GuiEventData {
             mode: string_at(payload, &["mode", "stack_mode", "stackMode"]),
             message: string_at(payload, &["message", "reason"])
                 .or_else(|| Some("stack operating in degraded mode".to_string())),
+        }),
+        // IPC client connection lifecycle (v0.0.11+)
+        "ipc.connected" => GuiEventData::IpcStatus(GuiIpcStatusEvent {
+            active: u64_at(payload, &["active"]).unwrap_or(0) as u32,
+            pipe: string_at(payload, &["pipe", "path", "peer"]),
+            error: None,
+        }),
+        "ipc.disconnected" => GuiEventData::IpcStatus(GuiIpcStatusEvent {
+            active: u64_at(payload, &["active"]).unwrap_or(0) as u32,
+            pipe: string_at(payload, &["pipe", "path", "peer"]),
+            error: string_at(payload, &["error"]),
         }),
         _ => unknown_payload("unsupported zero event type", payload),
     }

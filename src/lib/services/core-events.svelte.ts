@@ -247,6 +247,12 @@ class CoreEventsService {
       return;
     }
 
+    // ── IPC 客户端连接/断开（诊断用，不驱动 UI）──
+    if (eventType === 'core.ipcStatus') {
+      this._handleIpcStatus(data);
+      return;
+    }
+
     // ── 未知事件 → 记录日志用于调试（但不要污染 UI）──
     if (eventType === 'core.unknownEvent') {
       this._logUnknownEvent(data, event.sourceEventType);
@@ -409,6 +415,16 @@ class CoreEventsService {
     if (!data || typeof data !== 'object') return null;
     const o = data as Record<string, unknown>;
     return typeof o['flowId'] === 'string' ? o['flowId'] : null;
+  }
+
+  private _handleIpcStatus(data: unknown) {
+    const obj = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+    console.debug('[ZNet] ipc status', {
+      active: obj['active'],
+      pipe: obj['pipe'],
+      error: obj['error'],
+    });
+    // Diagnostic only — not surfaced to user UI
   }
 
   private _logUnknownEvent(data: unknown, sourceType: string) {

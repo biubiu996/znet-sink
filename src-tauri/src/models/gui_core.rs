@@ -372,6 +372,8 @@ pub enum GuiEventData {
     TunStatus(GuiTunStatusEvent),
     /// Network stack status change — SystemStack / proxy stack (v0.0.5+)
     StackStatus(GuiStackStatusEvent),
+    /// IPC client connection lifecycle (v0.0.11+)
+    IpcStatus(GuiIpcStatusEvent),
     Unknown(GuiUnknownEvent),
 }
 
@@ -423,6 +425,18 @@ pub struct GuiStackStatusEvent {
     /// "system" (SystemStack) | "proxy" | "mixed"
     pub mode: Option<String>,
     pub message: Option<String>,
+}
+
+/// IPC client connection lifecycle event (ipc.connected / ipc.disconnected).
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiIpcStatusEvent {
+    /// Number of active IPC connections after this event.
+    pub active: u32,
+    /// Named pipe path (Windows) or peer address (Unix).
+    pub pipe: Option<String>,
+    /// Error details on abnormal disconnection.
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
