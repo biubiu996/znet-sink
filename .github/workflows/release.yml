@@ -9,8 +9,86 @@ permissions:
   contents: write
 
 jobs:
+  # ── Generate changelog from conventional commits ──
+  changelog:
+    runs-on: ubuntu-latest
+    outputs:
+      body: ${{ steps.generate.outputs.body }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes from conventional commits
+        id: generate
+        shell: bash
+        run: |
+          # Find the previous tag so we only include commits from this release
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            RANGE=""  # first release — include all commits
+          else
+            RANGE="${PREV_TAG}..HEAD"
+          fi
+
+          # Categorize conventional commits.  Supports the common types from
+          # commitlint-config-conventional.  Breaking changes are detected via
+          # both "BREAKING CHANGE" footer and the "!:" shorthand (feat!: …).
+          categorize() {
+            local type="$1" label="$2"
+            local commits
+            # Match type: msg, type(scope): msg, and type!: msg (breaking)
+            commits=$(git log --format="  - %s" ${RANGE} --grep="^${type}[!:(]" 2>/dev/null || true)
+            if [ -n "$commits" ]; then
+              echo "### ${label}"
+              echo "$commits" | sed -E "s/^  - ${type}[!(]?:? ?/  - /; s/\)?:? / /"
+              echo ""
+            fi
+          }
+
+          # Breaking changes: "BREAKING CHANGE" footer or "type!:" prefix
+          BREAKING=$(git log --format="  - %s" ${RANGE} --grep="BREAKING CHANGE\|!: " 2>/dev/null || true)
+
+          {
+            echo "## $(echo "${{ github.ref_name }}" | sed 's/^v//')"
+            echo ""
+
+            if [ -n "$BREAKING" ]; then
+              echo "### ⚠ Breaking Changes"
+              echo "$BREAKING"
+              echo ""
+            fi
+
+            categorize "feat"     "🚀 Features"
+            categorize "fix"      "🐛 Bug Fixes"
+            categorize "perf"     "⚡ Performance"
+            categorize "refactor" "🔧 Refactoring"
+            categorize "docs"     "📝 Documentation"
+            categorize "style"    "💄 Style"
+            categorize "test"     "✅ Tests"
+            categorize "ci"       "🤖 CI / Build"
+            categorize "chore"    "🏠 Chores"
+            categorize "revert"   "⏪ Reverts"
+            categorize "build"    "📦 Dependencies"
+          } > /tmp/release-notes.md
+
+          # Fallback: if nothing matched, include a simple summary
+          if [ $(wc -l < /tmp/release-notes.md) -le 3 ]; then
+            echo "Full changelog: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${{ github.ref_name }}" >> /tmp/release-notes.md
+          fi
+
+          cat /tmp/release-notes.md
+
+          # Write the body as a job output (multiline)
+          {
+            echo 'body<<EOF'
+            cat /tmp/release-notes.md
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
   # ── Build across platforms ──
   build:
+    needs: changelog
     strategy:
       fail-fast: false
       matrix:
@@ -68,65 +146,67 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'v__VERSION__'
-          generateReleaseNotes: true
+          releaseBody: ${{ needs.changelog.outputs.body }}
           releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
 
-  # ── Generate and upload update manifest (latest.json) ──
-  generate-update-manifest:
+      # The Tauri bundler generates a platform-specific latest.json with
+      # a real signature (signed by TAURI_SIGNING_PRIVATE_KEY).  Capture it
+      # so the merge job can combine all platforms into a single manifest.
+      - name: Find and prepare latest.json for merge
+        shell: bash
+        run: |
+          LATEST_JSON=$(find src-tauri/target -name "latest.json" -not -path "*/node_modules/*" 2>/dev/null | head -1)
+          if [ -z "$LATEST_JSON" ]; then
+            echo "::warning::latest.json not found for ${{ matrix.platform-key }} — this platform will be missing from the update manifest"
+            mkdir -p upload
+            echo '{"platforms":{}}' > upload/latest.json
+          else
+            echo "Found latest.json at ${LATEST_JSON}"
+            mkdir -p upload
+            cp "${LATEST_JSON}" upload/latest.json
+          fi
+
+      - name: Upload latest.json as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-json-${{ matrix.platform-key }}
+          path: upload/latest.json
+
+  # ── Merge per-platform latest.json into a single update manifest ──
+  # Each build job produces a latest.json containing ONLY its own platform
+  # entry (with a real signature).  This job merges them all together so
+  # the Tauri updater plugin can verify the signature for any platform.
+  merge-updater-manifest:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Download per-platform latest.json artifacts
+        uses: actions/download-artifact@v4
         with:
-          fetch-depth: 0
+          pattern: updater-json-*
+          path: artifacts
 
-      - name: Generate latest.json
+      - name: Merge manifests into one latest.json
         shell: bash
         run: |
-          TAG="${{ github.ref_name }}"
-          VERSION="${TAG#v}"
-          REPO="zerodenet/znet-sink"
-          RELEASE_NOTES_URL="https://github.com/${REPO}/releases/tag/${TAG}"
+          echo "Artifacts found:"
+          find artifacts -name "latest.json" -exec echo "  {}" \;
 
-          # Tauri 2 updater looks for this file at the configured endpoint.
-          # GitHub's /releases/latest/download/ redirects to the most recent
-          # non-draft, non-prerelease release → every tag push gets its own
-          # latest.json, and the "latest" pointer is automatic.
-          #
-          # Asset names below must match Tauri bundler output.
-          # Verify on first release and adjust if needed.
-          cat <<EOF > latest.json
-          {
-            "version": "${VERSION}",
-            "notes": "See release notes: ${RELEASE_NOTES_URL}",
-            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "platforms": {
-              "windows-x86_64": {
-                "signature": "",
-                "url": "https://github.com/${REPO}/releases/download/${TAG}/ZNet%20Sink_${VERSION}_x64-setup.exe"
-              },
-              "darwin-x86_64": {
-                "signature": "",
-                "url": "https://github.com/${REPO}/releases/download/${TAG}/ZNet%20Sink_${VERSION}_x64.dmg"
-              },
-              "darwin-aarch64": {
-                "signature": "",
-                "url": "https://github.com/${REPO}/releases/download/${TAG}/ZNet%20Sink_${VERSION}_aarch64.dmg"
-              },
-              "linux-x86_64": {
-                "signature": "",
-                "url": "https://github.com/${REPO}/releases/download/${TAG}/znet-sink_${VERSION}_amd64.deb"
-              }
-            }
-          }
-          EOF
+          # Merge: use first file as the base (carries version, notes,
+          # pub_date), then fold every file's platforms into one dict.
+          # jq '*' merges objects — each platform's signature & url are preserved.
+          jq -s '
+            (.[0] // {}) as $base
+            | $base
+            | .platforms = (reduce .[] as $item ({}; . * $item.platforms))
+          ' artifacts/updater-json-*/latest.json > latest.json
 
-          echo "Generated latest.json:"
+          echo "=== Merged latest.json ==="
           cat latest.json
 
-      - name: Upload latest.json to release
+      - name: Upload merged latest.json to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
