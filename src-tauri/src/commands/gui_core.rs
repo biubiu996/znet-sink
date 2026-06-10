@@ -8,7 +8,7 @@ use crate::models::core_process::CoreProcessState;
 use crate::models::gui_core::{
     ConfigProxyNode, GuiConfigPlanApplyResult, GuiConnection, GuiConnectionCloseResult,
     GuiConnectionList, GuiConnectionListOptions, GuiCoreHealth, GuiCoreOverview, GuiFeatureStatus,
-    GuiPolicyGroup, GuiPolicySelectionResult, GuiTargetProbeResult, GuiTrafficSnapshot,
+    GuiPolicyGroup, GuiPolicySelectionResult, GuiTrafficSnapshot,
     GuiTrafficStats, GuiZeroCapabilities,
 };
 use crate::services::{core_config, core_process, interaction_mode, probe};
@@ -122,17 +122,27 @@ pub async fn gui_select_policy(
     ZeroAdapter::new().select_policy(policy_tag, target_tag, opts).await
 }
 
+/// Probe a single target's connectivity.
+///
+/// Fire-and-forget like `gui_probe_policy`: spawns the IPC probe in background,
+/// returns immediately. Results arrive via `diagnostics.probe_target` response
+/// logged to the event stream, or the frontend can poll via policy status.
 #[tauri::command]
 pub async fn gui_probe_target(
     state: State<'_, AppState>,
     target_tag: String,
-) -> AppResult<GuiTargetProbeResult> {
+) -> AppResult<serde_json::Value> {
     let adapter = ZeroAdapter::new();
-    // Health check first
     let opts = default_opts(state.inner());
-    adapter.readiness_health(opts).await?;
+    // Quick health check first — fail fast if kernel is offline
+    if adapter.readiness_health(opts).await.is_err() {
+        return Ok(serde_json::json!({"accepted": false, "reason": "kernel offline"}));
+    }
     let opts = default_opts(state.inner());
-    adapter.probe_target(target_tag, opts).await
+    tauri::async_runtime::spawn(async move {
+        let _ = adapter.probe_target(target_tag, opts).await;
+    });
+    Ok(serde_json::json!({"accepted": true}))
 }
 
 #[tauri::command]
@@ -322,13 +332,24 @@ pub async fn gui_set_mode(
 }
 
 /// Trigger a url_test probe on a policy group.
+///
+/// Fire-and-forget: spawns the IPC command in background, returns immediately.
+/// Results arrive via the event stream as `policy.probeCompleted` events.
+/// This avoids blocking the UI for the entire probe duration (which can be
+/// several seconds per url_test cycle).
 #[tauri::command]
 pub async fn gui_probe_policy(
     state: State<'_, AppState>,
     policy_tag: String,
 ) -> AppResult<serde_json::Value> {
     let opts = default_opts(state.inner());
-    ZeroAdapter::new().probe_policy(policy_tag, opts).await
+    // Fire the probe in background — the kernel will emit policy.probeCompleted
+    // events when results are ready. The frontend listens for these via the
+    // event subscription to update latency/health indicators.
+    tauri::async_runtime::spawn(async move {
+        let _ = ZeroAdapter::new().probe_policy(policy_tag, opts).await;
+    });
+    Ok(serde_json::json!({"accepted": true}))
 }
 
 /// DNS lookup diagnostic.

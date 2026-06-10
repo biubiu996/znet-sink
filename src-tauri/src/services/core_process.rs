@@ -183,9 +183,14 @@ pub fn start(app_handle: AppHandle, state: State<'_, AppState>) -> AppResult<Cor
                         let cleaned = strip_ansi(&line);
                         if !cleaned.trim().is_empty() {
                             let state = app_handle_stderr.state::<AppState>();
-                            let level = classify_stderr_level(&cleaned);
-                            let _ =
-                                logs::append_entry(&state, LogSource::Core, level, cleaned, None);
+                            let (level, fields) = parse_kernel_log_line(&cleaned);
+                            let _ = logs::append_entry(
+                                &state,
+                                LogSource::Core,
+                                level,
+                                cleaned,
+                                Some(fields),
+                            );
                         }
                     }
                 }
@@ -507,4 +512,130 @@ fn classify_stderr_level(line: &str) -> LogLevel {
     } else {
         LogLevel::Info
     }
+}
+
+/// Parse a kernel log line into a structured level and fields.
+///
+/// The kernel uses a `tracing-subscriber` style format:
+///   `2026-06-10T10:33:23.610135Z  INFO ipc client connected pipe=... active=3`
+///
+/// Extracts the timestamp and level, then converts `key=value` pairs
+/// into JSON fields so the frontend can display them in a structured way.
+fn parse_kernel_log_line(line: &str) -> (LogLevel, serde_json::Value) {
+    let mut fields = serde_json::Map::new();
+
+    // Try to parse the tracing-subscriber format:
+    //   <ISO 8601 timestamp>  <LEVEL> <spans...> <message key=value ...>
+    let trimmed = line.trim();
+
+    // Split off the ISO 8601 timestamp: YYYY-MM-DDTHH:MM:SS(.fff)?Z
+    let (ts_rest, level, msg) = if trimmed.len() >= 20
+        && trimmed.as_bytes().get(4) == Some(&b'-')
+        && trimmed.as_bytes().get(10) == Some(&b'T')
+    {
+        // Find end of timestamp (next space)
+        let ts_end = trimmed.find(' ').unwrap_or(trimmed.len());
+        let ts = &trimmed[..ts_end];
+        fields.insert(
+            "timestamp".to_string(),
+            serde_json::Value::String(ts.to_string()),
+        );
+
+        let after_ts = trimmed[ts_end..].trim_start();
+
+        // Next token is the level: INFO, WARN, ERROR, DEBUG, TRACE
+        let (lv, rest) = if after_ts.len() >= 4 {
+            let level_end = after_ts.find(' ').unwrap_or(after_ts.len());
+            (&after_ts[..level_end], after_ts[level_end..].trim_start())
+        } else {
+            ("INFO", after_ts)
+        };
+        fields.insert(
+            "level".to_string(),
+            serde_json::Value::String(lv.to_string()),
+        );
+
+        (true, lv, rest)
+    } else {
+        (false, "", trimmed)
+    };
+
+    let level = if ts_rest {
+        match level {
+            "ERROR" => LogLevel::Error,
+            "WARN" => LogLevel::Warn,
+            "DEBUG" | "TRACE" => LogLevel::Debug,
+            _ => LogLevel::Info,
+        }
+    } else {
+        classify_stderr_level(line)
+    };
+
+    // Extract key=value pairs from the message
+    // The kernel uses `key=value` format for structured fields, e.g.:
+    //   `pipe=\\.\pipe\zero-control active=3`
+    // keys are alphanumeric with underscores; values are everything until
+    // the next space or end of line.
+    let mut msg_without_kv = String::new();
+    let mut i = 0;
+    let bytes = msg.as_bytes();
+    while i < bytes.len() {
+        // Check for key=value pattern at current position
+        if i == 0 || bytes[i - 1] == b' ' {
+            let key_start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b'=' && i > key_start {
+                let key = &msg[key_start..i];
+                i += 1; // skip '='
+
+                // Value: until next space or end of line
+                // Handle `\\.\pipe\...` paths (backslash escapes)
+                let val_start = i;
+                while i < bytes.len() {
+                    if bytes[i] == b' ' {
+                        // Check if this is likely part of a path
+                        // (backslash before space, or we're in key=value chain)
+                        if i + 1 < bytes.len()
+                            && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_')
+                        {
+                            // Next token looks like another key — end of value
+                            break;
+                        }
+                        // Otherwise it's a regular space, also end
+                        break;
+                    }
+                    i += 1;
+                }
+                let value = &msg[val_start..i];
+                fields.insert(
+                    key.to_string(),
+                    serde_json::Value::String(value.to_string()),
+                );
+
+                // Skip trailing space
+                if i < bytes.len() && bytes[i] == b' ' {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+
+        // Regular character — append to message
+        msg_without_kv.push(bytes[i] as char);
+        i += 1;
+    }
+
+    let clean_msg = msg_without_kv.trim().to_string();
+    fields.insert(
+        "message".to_string(),
+        serde_json::Value::String(if clean_msg.is_empty() {
+            msg.to_string()
+        } else {
+            clean_msg
+        }),
+    );
+
+    (level, serde_json::Value::Object(fields))
 }
