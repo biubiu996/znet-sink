@@ -88,18 +88,22 @@ async fn cached_or_query_zero_features(state: &AppState) -> Vec<String> {
         }
     }
 
-    // Skip IPC entirely if core is not running — avoids the 5s named-pipe timeout
-    let core_running = crate::services::core_process::refresh_status(state)
-        .map(|s| s.state == crate::models::core_process::CoreProcessState::Running)
+    // Try-lock: if the core_process lock is held (kernel starting/stopping),
+    // skip IPC immediately instead of blocking the UI thread waiting for the
+    // lock.  Fall back to cached or empty features — the interaction surface
+    // will be refreshed once the kernel is running and the cache expires.
+    let core_running = state
+        .core_process()
+        .try_lock()
+        .map(|process| process.status.state == crate::models::core_process::CoreProcessState::Running)
         .unwrap_or(false);
 
     if !core_running {
         crate::services::logs::znet_log(
             Some(state),
             crate::models::logs::LogLevel::Debug,
-            "zero_features: core not running, skipping IPC query",
+            "zero_features: core not running (or lock held), skipping IPC query",
         );
-        // Return cached features even if expired, or empty if never queried
         if let Ok(cache) = lock(state.zero_features_cache(), "zero_features_cache") {
             if let Some(ref cached) = *cache {
                 return cached.features.clone();

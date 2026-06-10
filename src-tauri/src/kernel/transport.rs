@@ -269,46 +269,49 @@ unsafe impl Send for NamedPipeClient {}
 
 #[cfg(windows)]
 impl NamedPipeClient {
+    /// Connect to a named pipe with a bounded timeout.
+    ///
+    /// `WaitNamedPipeW` checks whether a pipe server is listening.  If
+    /// it returns zero (no server), we bail immediately instead of
+    /// falling through to `CreateFileW` — on Windows `CreateFileW`
+    /// blocks for an OS-default timeout when no pipe is available,
+    /// which can be 10–20 seconds.
     fn connect(path: &str, timeouts: StreamTimeouts) -> io::Result<Self> {
         let path_wide = wide_null(path);
+        let write_timeout_ms = timeouts
+            .write
+            .map(duration_to_millis)
+            .unwrap_or(2_000);
 
-        const MAX_RETRIES: u32 = 5;
-        for retry in 0..MAX_RETRIES {
-            if let Some(write_timeout) = timeouts.write {
-                let _ = unsafe {
-                    WaitNamedPipeW(path_wide.as_ptr(), duration_to_millis(write_timeout))
-                };
-            }
+        let waited = unsafe {
+            WaitNamedPipeW(path_wide.as_ptr(), write_timeout_ms)
+        };
 
-            let handle = unsafe {
-                CreateFileW(
-                    path_wide.as_ptr(),
-                    GENERIC_READ | GENERIC_WRITE,
-                    0,
-                    std::ptr::null(),
-                    OPEN_EXISTING,
-                    FILE_FLAG_OVERLAPPED,
-                    std::ptr::null_mut(),
-                )
-            };
-
-            if handle == INVALID_HANDLE_VALUE {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() == Some(231) && retry + 1 < MAX_RETRIES {
-                    std::thread::sleep(Duration::from_millis(50));
-                    continue;
-                }
-                return Err(error);
-            }
-
-            return Ok(Self {
-                handle,
-                read_timeout: timeouts.read,
-                write_timeout: timeouts.write,
-            });
+        if waited == 0 {
+            return Err(io::Error::last_os_error());
         }
 
-        Err(io::Error::last_os_error())
+        let handle = unsafe {
+            CreateFileW(
+                path_wide.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED,
+                std::ptr::null_mut(),
+            )
+        };
+
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(Self {
+            handle,
+            read_timeout: timeouts.read,
+            write_timeout: timeouts.write,
+        })
     }
 
     fn read_overlapped(&self, buffer: &mut [u8]) -> io::Result<usize> {

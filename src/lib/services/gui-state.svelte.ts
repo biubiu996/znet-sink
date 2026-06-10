@@ -39,6 +39,7 @@ class GuiStateStore {
   tunStatus = $state<GuiFeatureStatus | null>(null);
   configNodes = $state<ConfigProxyNode[]>([]);
 
+  isInitializing = $state(true); // true until first refreshAll completes
   isLoading = $state(false);
   isConnecting = $state(false);
   isDisconnecting = $state(false);
@@ -54,8 +55,14 @@ class GuiStateStore {
   async initialize() {
     if (this.isInitialized) return;
     this.isInitialized = true;
+    this.isInitializing = true;
 
     await this.refreshAll();
+
+    // Unlock kernel action buttons after the first full state snapshot.
+    // Until this point the UI may show stale (pre-load) state where buttons
+    // look clickable but the kernel is already running/starting.
+    this.isInitializing = false;
   }
 
   async refreshAll() {
@@ -362,15 +369,18 @@ class GuiStateStore {
   }
 
   get canConnect(): boolean {
+    if (this.isInitializing) return false;
     const selfTestBlocking = this.selfTest !== null && !this.selfTest.ready;
     return (!selfTestBlocking || this.isProcessRunning) && !this.isConnecting && !this.isDisconnecting && !this.isConnected;
   }
 
   get canDisconnect(): boolean {
+    if (this.isInitializing) return false;
     return !this.isConnecting && !this.isDisconnecting && this.isConnected;
   }
 
   get canStartCore(): boolean {
+    if (this.isInitializing) return false;
     const selfTestBlocking = this.selfTest !== null && !this.selfTest.ready;
     return !selfTestBlocking && !this.isCoreBusy && !this.isConnecting && !this.isDisconnecting && !this.isProcessRunning;
   }

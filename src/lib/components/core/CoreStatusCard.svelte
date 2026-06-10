@@ -30,10 +30,11 @@
 
   // Label
   const stateLabel = $derived(
+    guiState.isInitializing  ? '连接中…' :
     guiState.isConnecting    ? '启用中…' :
     guiState.isDisconnecting ? '关闭中…' :
     guiState.isStartingCore  ? '启动中'   :
-    guiState.isStoppingCore  ? '停止中'   :
+    guiState.isStoppingCore  ? '重启中'   :
     isSystemProxyEnabled     ? '服务中'   :
     isCoreAvailable          ? '监听中'   :
     isProcessStarting        ? '启动中'   :
