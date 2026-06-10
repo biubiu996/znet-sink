@@ -6,8 +6,11 @@
   import { coreEvents } from '$lib/services/core-events.svelte';
   import { initTheme, applyTheme } from '$lib/services/theme.svelte';
   import { updater } from '$lib/services/updater.svelte';
+  import { fade } from 'svelte/transition';
   import TitleBar from '$lib/components/TitleBar.svelte';
   import AppHeader from '$lib/components/AppHeader.svelte';
+  import AppLogo from '$lib/components/AppLogo.svelte';
+  import { Spinner } from '$lib/components/ui/Spinner';
   import TabContent from '$lib/components/TabContent.svelte';
   import { WelcomeGuide } from '$lib/components/WelcomeGuide';
   import Toast from '$lib/components/Toast.svelte';
@@ -72,11 +75,23 @@
   <!-- Main content area -->
   <div class="flex-1 min-h-0 px-3 sm:px-5 py-2 sm:py-3.5 flex flex-col overflow-hidden">
     {#if store.appLoading}
-      <div class="flex-1 flex items-center justify-center">
-        <span style="font-size: 13px; color: var(--muted-foreground); opacity: 0.5;">加载中…</span>
+      <!-- ── Loading screen: logo + spinner with animated entry ── -->
+      <div class="flex-1 flex flex-col items-center justify-center gap-5" transition:fade={{ duration: 200 }}>
+        <div class="loading-logo-ring">
+          <div class="loading-logo-inner">
+            <AppLogo size={36} class="loading-logo" />
+          </div>
+        </div>
+        <div class="flex flex-col items-center gap-2">
+          <span class="loading-title">ZNet Sink</span>
+          <div class="flex items-center gap-2">
+            <Spinner size="sm" color="default" />
+            <span class="loading-hint">正在加载配置…</span>
+          </div>
+        </div>
       </div>
     {:else if store.loadError}
-      <div class="flex-1 flex flex-col items-center justify-center gap-3">
+      <div class="flex-1 flex flex-col items-center justify-center gap-3" transition:fade={{ duration: 200 }}>
         <span style="font-size: 14px; color: var(--destructive); font-weight: 600;">启动失败</span>
         <span style="font-size: 12px; color: var(--muted-foreground); max-width: 360px; text-align: center;">{store.loadError}</span>
         <button
@@ -87,9 +102,84 @@
     {:else if !store.isInitialized}
       <WelcomeGuide />
     {:else}
-      <TabContent />
+      {#key store.activeTab}
+        <div class="flex-1 min-h-0 flex flex-col" transition:fade={{ duration: 160 }}>
+          <TabContent />
+        </div>
+      {/key}
     {/if}
   </div>
 
   <Toast />
 </main>
+
+<style>
+  /* ── Loading screen ── */
+  .loading-logo-ring {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    background: conic-gradient(
+      from 0deg,
+      var(--primary) 0deg,
+      var(--accent) 120deg,
+      var(--muted) 240deg,
+      var(--primary) 360deg
+    );
+    animation: loading-ring-spin 1.8s linear infinite;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2.5px;
+  }
+
+  .loading-logo-inner {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: var(--background);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .loading-logo :global(.app-logo-img) {
+    border-radius: 8px;
+  }
+
+  .loading-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--foreground);
+    letter-spacing: 0.01em;
+  }
+
+  .loading-hint {
+    font-size: 12.5px;
+    color: var(--muted-foreground);
+    font-weight: 450;
+  }
+
+  @keyframes loading-ring-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  /* ── Retry button ── */
+  .retry-btn {
+    height: 32px;
+    padding: 0 16px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--card);
+    color: var(--foreground);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.13s ease, box-shadow 0.13s ease;
+  }
+  .retry-btn:hover {
+    background: var(--muted);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  }
+</style>
