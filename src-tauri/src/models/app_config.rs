@@ -111,7 +111,7 @@ impl Default for AppUiConfig {
             theme: default_theme(),
             ui_mode: default_ui_mode(),
             sidebar_collapsed: false,
-            hidden_menu_keys: Vec::new(),
+            hidden_menu_keys: vec!["debug".to_string()],
             default_route: None,
         }
     }

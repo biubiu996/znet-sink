@@ -16,6 +16,7 @@ use crate::commands::core_process as core_process_commands;
 use crate::commands::gui_connection as gui_connection_commands;
 use crate::commands::gui_core as gui_core_commands;
 use crate::commands::gui_events as gui_events_commands;
+use crate::commands::debug as debug_commands;
 use crate::commands::gui_self_test as gui_self_test_commands;
 use crate::commands::kernel_version as kernel_version_commands;
 use crate::commands::logs as logs_commands;
@@ -26,7 +27,6 @@ use crate::commands::subscription as subscription_commands;
 use crate::commands::system_proxy as system_proxy_commands;
 use crate::lifecycle::phases;
 use crate::services::{core_process, local_proxy, system_proxy_guard};
-use crate::kernel::adapter::KernelAdapter;
 use crate::state::app_state::AppState;
 use tauri::{Emitter, Manager};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -211,6 +211,7 @@ pub fn run() {
             gui_connection_commands::gui_disconnect,
             gui_events_commands::gui_events_start,
             gui_events_commands::gui_events_stop,
+            debug_commands::gui_debug_frames,
             gui_self_test_commands::gui_self_test_snapshot,
             proxy_mode_commands::gui_proxy_mode_status,
             proxy_mode_commands::gui_set_proxy_mode,
@@ -252,14 +253,25 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app_handle.state::<AppState>();
-                    let adapter = crate::kernel::zero::ZeroAdapter::new();
-                    let opts = crate::services::core_config::ipc_options_from_app_config(
+                    let base_opts = crate::services::core_config::ipc_options_from_app_config(
                         &state.app_config().lock().map(|c| c.core.clone()).unwrap_or_default()
                     );
 
-                    // Check if kernel is already running
-                    if adapter.readiness_health(opts).await.is_ok() {
-                        eprintln!("[ZNet] kernel already running, connecting");
+                    // Fast probe: try a ping with a 200ms timeout.  On local
+                    // IPC this should connect in sub-ms time if the kernel is
+                    // alive.  A timeout means the pipe is a stale leftover
+                    // from a crashed/killed previous session — clean up and
+                    // start fresh.
+                    let probe_opts = crate::models::core::CoreIpcOptions {
+                        timeout_ms: Some(200),
+                        ..base_opts.clone()
+                    };
+                    let kernel_alive = crate::kernel::protocol::ping(Some(probe_opts))
+                        .await
+                        .is_ok_and(|r| r.error.is_none());
+
+                    if kernel_alive {
+                        eprintln!("[ZNet] kernel already running (fast probe ok), connecting");
 
                         // Update the process state so the UI reflects the
                         // actual kernel status.  Without this the UI shows

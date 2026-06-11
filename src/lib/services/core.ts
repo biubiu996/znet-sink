@@ -432,6 +432,14 @@ export async function guiProbePolicy(policyTag: string): Promise<unknown> {
   return invoke('gui_probe_policy', { policyTag });
 }
 
+// ── Debug ──
+
+import type { DebugFrame } from '$lib/types/debug';
+
+export async function getGuiDebugFrames(): Promise<DebugFrame[]> {
+  return invoke('gui_debug_frames');
+}
+
 // ── Diagnostics ──
 
 export async function guiDnsLookup(hostname: string): Promise<unknown> {

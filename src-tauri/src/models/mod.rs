@@ -9,4 +9,5 @@ pub mod proxy_config;
 pub mod rule_set;
 pub mod subscription;
 
+pub mod debug;
 pub mod kernel_version;

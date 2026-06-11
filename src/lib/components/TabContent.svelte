@@ -8,6 +8,7 @@
   import LogsTab from './tabs/LogsTab.svelte';
   import ConnectionsTab from './tabs/ConnectionsTab.svelte';
   import CapabilitiesTab from './tabs/CapabilitiesTab.svelte';
+  import DebugTab from './tabs/DebugTab.svelte';
   import SettingsPanel from './SettingsPanel.svelte';
   import PlaceholderTab from './tabs/PlaceholderTab.svelte';
 </script>
@@ -30,6 +31,8 @@
   <SettingsPanel />
 {:else if store.activeTab === 'capabilities'}
   <CapabilitiesTab />
+{:else if store.activeTab === 'debug'}
+  <DebugTab />
 {:else}
   <PlaceholderTab label={store.activeTab} />
 {/if}

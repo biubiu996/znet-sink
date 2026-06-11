@@ -9,10 +9,41 @@
 
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::config::{DEFAULT_IPC_TIMEOUT_MS, MAX_IPC_TIMEOUT_MS};
 use crate::errors::{AppError, AppResult};
+use crate::models::debug::{DebugFrame, DEBUG_RING_SIZE};
+
+/// Static ring buffer for diagnostic IPC frame capture.
+static DEBUG_FRAMES: std::sync::LazyLock<Mutex<Vec<DebugFrame>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::with_capacity(DEBUG_RING_SIZE)));
+
+static DEBUG_FRAME_ID: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot of all captured debug frames (newest first).
+pub(crate) fn debug_frames_snapshot() -> Vec<DebugFrame> {
+    DEBUG_FRAMES
+        .lock()
+        .map(|frames| {
+            let mut v = frames.clone();
+            v.reverse(); // newest first
+            v
+        })
+        .unwrap_or_default()
+}
+
+/// Push a frame into the ring buffer, dropping oldest if at capacity.
+fn debug_push(mut frame: DebugFrame) {
+    frame.id = DEBUG_FRAME_ID.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut frames) = DEBUG_FRAMES.lock() {
+        if frames.len() >= DEBUG_RING_SIZE {
+            frames.remove(0);
+        }
+        frames.push(frame);
+    }
+}
 use crate::kernel::transport;
 use crate::models::core::{response_id, CoreCallResult, CoreEndpoint, CoreIpcOptions};
 
@@ -106,12 +137,26 @@ pub async fn request(
 ) -> AppResult<CoreCallResult> {
     let endpoint = endpoint_from_options(options.as_ref())?;
     let timeout = timeout_from_options(options.as_ref())?;
-    let (frame, request_id) = ensure_request_id(frame)?;
-    let frame = transport::serialize_frame(&frame)?;
+    let (frame_value, request_id) = ensure_request_id(frame)?;
+    let frame_type = frame_type_for_debug(&frame_value);
+    let t0 = std::time::Instant::now();
+
+    // Capture outgoing frame (before serialization so we keep the Value)
+    debug_push(DebugFrame {
+        id: 0, // filled by debug_push
+        at_ms: crate::services::common::now_unix_ms(),
+        direction: "tx",
+        frame_type: frame_type.clone(),
+        payload: frame_value.clone(),
+        elapsed_ms: None,
+        error: None,
+    });
+
+    let frame = transport::serialize_frame(&frame_value)?;
     let result_endpoint = endpoint.clone();
     let expected_id = request_id.clone();
 
-    let response = tauri::async_runtime::spawn_blocking(move || {
+    let response: Result<Value, AppError> = tauri::async_runtime::spawn_blocking(move || {
         let response = transport::send_json_line_request(endpoint, frame, timeout)?;
         validate_response_id(&response, expected_id.as_ref())?;
         Ok(response)
@@ -119,11 +164,49 @@ pub async fn request(
     .await
     .map_err(|error| AppError::internal(format!("IPC worker failed: {error}")))?;
 
+    let elapsed = t0.elapsed().as_millis() as u64;
+
+    // Capture response frame
+    match &response {
+        Ok(value) => {
+            debug_push(DebugFrame {
+                id: 0,
+                at_ms: crate::services::common::now_unix_ms(),
+                direction: "rx",
+                frame_type,
+                payload: value.clone(),
+                elapsed_ms: Some(elapsed),
+                error: None,
+            });
+        }
+        Err(error) => {
+            debug_push(DebugFrame {
+                id: 0,
+                at_ms: crate::services::common::now_unix_ms(),
+                direction: "rx",
+                frame_type,
+                payload: json!({}),
+                elapsed_ms: Some(elapsed),
+                error: Some(error.message.clone()),
+            });
+        }
+    }
+
     Ok(CoreCallResult::from_core_result(
         result_endpoint,
         request_id,
         response,
     ))
+}
+
+/// Extract the frame type for debug capture.
+fn frame_type_for_debug(frame: &Value) -> String {
+    frame
+        .as_object()
+        .and_then(|obj| obj.get("type"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string()
 }
 
 // ── Convenience queries ─────────────────────────────────────────────

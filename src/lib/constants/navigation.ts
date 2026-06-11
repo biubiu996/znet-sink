@@ -11,7 +11,8 @@ export const NAV_TABS: NavTab[] = [
   { id: 'rules', label: '规则' },
   { id: 'connections', label: '连接' },
   { id: 'logs', label: '日志' },
-  { id: 'settings', label: '设置' }
+  { id: 'settings', label: '设置' },
+  { id: 'debug', label: '调试' },
 ];
 
 export const TAB_LABELS: Record<string, string> = {
@@ -22,5 +23,6 @@ export const TAB_LABELS: Record<string, string> = {
   rules: '规则',
   connections: '连接',
   logs: '日志',
-  settings: '设置'
+  settings: '设置',
+  debug: '调试',
 };
