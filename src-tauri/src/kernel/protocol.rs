@@ -138,10 +138,6 @@ pub async fn command(
 }
 
 /// Send a raw IPC frame and return the response.
-///
-/// Uses the global multiplexed connection — all query, command, ping,
-/// and subscribe frames share a SINGLE persistent pipe, matching the
-/// kernel's recommended pattern and avoiding ERROR_PIPE_BUSY (231).
 pub async fn request(
     frame: Value,
     options: Option<CoreIpcOptions>,
@@ -163,12 +159,13 @@ pub async fn request(
         error: None,
     });
 
+    let frame_bytes = transport::serialize_frame(&frame_value)?;
     let expected_id = request_id.clone();
+
     let (elapsed, response): (u64, Result<Value, AppError>) =
         tauri::async_runtime::spawn_blocking(move || {
             let t0 = std::time::Instant::now();
-            let conn = super::connection::get_or_connect(endpoint, timeout)?;
-            let response = conn.send_request(frame_value, timeout)?;
+            let response = transport::send_json_line_request(endpoint, frame_bytes, timeout)?;
             validate_response_id(&response, expected_id.as_ref())?;
             let elapsed = t0.elapsed().as_millis() as u64;
             Ok((elapsed, Ok(response)))

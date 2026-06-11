@@ -29,7 +29,6 @@
 //! ```
 
 pub mod adapter;
-pub(crate) mod connection;
 pub mod protocol;
 pub mod transport;
 pub mod zero;
