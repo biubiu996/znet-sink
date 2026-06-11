@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getGuiDebugFrames } from '$lib/services/core';
+  import { getGuiDebugFrames, clearDebugFrames } from '$lib/services/core';
   import type { DebugFrame } from '$lib/types/debug';
 
   let frames = $state<DebugFrame[]>([]);
@@ -11,6 +11,11 @@
   let _timer: ReturnType<typeof setInterval> | null = null;
 
   const FRAME_TYPES = ['all', 'ping', 'query', 'command', 'subscribe'];
+  const MAX_DISPLAY = 500;
+
+  async function clearAll() {
+    try { await clearDebugFrames(); frames = []; expandedIds = new Set(); } catch { /* ok */ }
+  }
 
   async function refresh() {
     try {
@@ -47,7 +52,7 @@
   });
 
   const visibleFrames = $derived(
-    filterType === 'all' ? frames : frames.filter(f => f.frameType === filterType)
+    (filterType === 'all' ? frames : frames.filter(f => f.frameType === filterType)).slice(0, MAX_DISPLAY)
   );
 
   // ── Helpers ──
@@ -137,6 +142,7 @@
         {autoRefresh ? '⏸' : '▶'}
       </button>
       <button onclick={refresh} class="debug-sm-btn">刷新</button>
+      <button onclick={clearAll} class="debug-sm-btn clear">清空</button>
     </div>
   </div>
 
@@ -187,6 +193,7 @@
   .debug-toggle.active { border-color: #22C55E; color: #22C55E; background: rgba(34, 197, 94, 0.06); }
   .debug-sm-btn { height: 22px; padding: 0 7px; border-radius: 5px; border: 1px solid var(--border); background: var(--card); color: var(--muted-foreground); font-size: 10.5px; font-weight: 500; cursor: pointer; transition: all 0.12s ease; white-space: nowrap; }
   .debug-sm-btn:hover { color: var(--foreground); background: var(--muted); }
+  .debug-sm-btn.clear:hover { color: var(--destructive); background: rgba(239, 68, 68, 0.08); }
 
   .debug-row { border-radius: 5px; border: 1px solid var(--border); background: var(--card); overflow: hidden; transition: background 0.08s ease; }
   .debug-row:hover { background: var(--surface); }

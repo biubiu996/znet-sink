@@ -440,6 +440,10 @@ export async function getGuiDebugFrames(): Promise<DebugFrame[]> {
   return invoke('gui_debug_frames');
 }
 
+export async function clearDebugFrames(): Promise<void> {
+  return invoke('gui_debug_clear');
+}
+
 // ── Diagnostics ──
 
 export async function guiDnsLookup(hostname: string): Promise<unknown> {

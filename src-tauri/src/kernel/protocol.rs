@@ -22,6 +22,13 @@ static DEBUG_FRAMES: std::sync::LazyLock<Mutex<Vec<DebugFrame>>> =
 
 static DEBUG_FRAME_ID: AtomicU64 = AtomicU64::new(0);
 
+/// Clear all captured debug frames.
+pub(crate) fn debug_clear() {
+    if let Ok(mut frames) = DEBUG_FRAMES.lock() {
+        frames.clear();
+    }
+}
+
 /// Snapshot of all captured debug frames (newest first).
 pub(crate) fn debug_frames_snapshot() -> Vec<DebugFrame> {
     DEBUG_FRAMES

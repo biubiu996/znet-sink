@@ -212,6 +212,7 @@ pub fn run() {
             gui_events_commands::gui_events_start,
             gui_events_commands::gui_events_stop,
             debug_commands::gui_debug_frames,
+            debug_commands::gui_debug_clear,
             gui_self_test_commands::gui_self_test_snapshot,
             proxy_mode_commands::gui_proxy_mode_status,
             proxy_mode_commands::gui_set_proxy_mode,
