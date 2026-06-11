@@ -8,10 +8,10 @@ fn default_app_config_is_gui_schema() {
     assert_eq!(config.schema_version, "gui.app.v1");
     assert_eq!(config.core.kernel, "zero");
     assert!(config.core.auto_connect);
-    assert!(!config.core.auto_start);
+    assert!(config.core.auto_start);
     assert_eq!(config.logs.level, "info");
     assert!(!config.ui.sidebar_collapsed);
-    assert!(config.ui.hidden_menu_keys.is_empty());
+    assert_eq!(config.ui.hidden_menu_keys, vec!["debug".to_string()]);
     assert!(config.ui.default_route.is_none());
     assert_eq!(config.local_proxy.host, "127.0.0.1");
     assert_eq!(config.local_proxy.port, 7890);
