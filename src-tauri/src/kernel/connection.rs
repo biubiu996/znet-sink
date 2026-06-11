@@ -1,23 +1,17 @@
 //! Single persistent IPC connection with request/event multiplexing.
 //!
-//! Per the kernel docs, a single named-pipe / unix-socket connection
-//! should carry all traffic: subscribe first, then multiplex query,
-//! command, and ping frames on the same stream.  Response frames have
-//! an `ok` key; event frames have a `schema_id` key.  Heartbeat lines
-//! (`:\n`) are skipped.
+//! Per the kernel docs, all traffic (query, command, ping, subscribe)
+//! shares ONE persistent named-pipe / unix-socket connection.  Response
+//! frames have an `ok` key; event frames have a `schema_id` key.
 //!
-//! This module replaces the old per-request `send_json_line_request`
-//! model which opened a new pipe for every call, exhausting pipe
-//! instances (error 231) under concurrent load.
+//! ## Deadlock avoidance
 //!
-//! ## Implementation note
-//!
-//! On Windows named pipes, `ReadFile` blocks until data arrives.  To
-//! avoid deadlocking writes while the reader thread waits for the next
-//! frame, we open **two handles to the same pipe**: one dedicated to
-//! the reader thread, one serialised by a mutex for writes.  Both
-//! handles refer to the same kernel pipe server instance, so the
-//! logical connection is still a single multiplexed stream.
+//! The single `ReadWrite` handle is shared between a reader thread and
+//! concurrent writers.  Both Rust's `Read` and `Write` require `&mut`,
+//! so we wrap the handle in a `Mutex`.  To avoid the reader holding the
+//! lock during a blocking `read()` while a writer waits, the reader
+//! uses `try_lock()` and yields the CPU when contention occurs.  Writes
+//! are brief (`write_all` + `flush`) so the reader rarely waits long.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -39,49 +33,35 @@ type EventSender = tokio::sync::broadcast::Sender<Value>;
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct MultiplexedIpc {
-    /// Write handle — serialised by a mutex to avoid interleaved frames.
-    writer: Mutex<Box<dyn transport::ReadWrite>>,
-    /// Dedicated read handle for the reader thread — never locked by writes.
-    reader: Mutex<Option<Box<dyn transport::ReadWrite>>>,
-    /// Pending requests waiting for a response, keyed by request `id`.
+    /// Single shared stream — serialised via try_lock (reader) / lock (writer).
+    stream: Mutex<Box<dyn transport::ReadWrite>>,
     pending: PendingRequests,
-    /// Event broadcast channel — populated by the reader thread.
     events: EventSender,
-    /// Connection endpoint for error messages.
     endpoint: CoreEndpoint,
-    /// Set to true once subscribe has been sent on this connection.
     subscribed: Mutex<bool>,
 }
 
 impl MultiplexedIpc {
-    /// Open a persistent IPC connection to `endpoint`.
-    /// Opens two handles: one for writing, one for the reader thread.
     pub fn connect(endpoint: CoreEndpoint, timeout: Duration) -> AppResult<Arc<Self>> {
-        let writer_stream = transport::connect_raw(&endpoint, timeout)?;
-        let reader_stream = transport::connect_raw(&endpoint, timeout)?;
+        let stream = transport::connect_raw(&endpoint, timeout)?;
         let pending: PendingRequests = Arc::new(Mutex::new(HashMap::new()));
         let events: EventSender = tokio::sync::broadcast::channel(256).0;
 
         let conn = Arc::new(Self {
-            writer: Mutex::new(writer_stream),
-            reader: Mutex::new(Some(reader_stream)),
+            stream: Mutex::new(stream),
             pending: pending.clone(),
             events: events.clone(),
             endpoint: endpoint.clone(),
             subscribed: Mutex::new(false),
         });
 
-        // Spawn the reader thread
         let conn_reader = Arc::clone(&conn);
-        let endpoint_reader = endpoint.clone();
-        std::thread::spawn(move || {
-            conn_reader.read_loop(endpoint_reader, pending, events);
-        });
+        let ep = endpoint.clone();
+        std::thread::spawn(move || conn_reader.read_loop(ep, pending, events));
 
         Ok(conn)
     }
 
-    /// Send a request frame and wait for the matching response.
     pub fn send_request(self: &Arc<Self>, frame: Value, timeout: Duration) -> AppResult<Value> {
         let id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
         let mut frame = frame;
@@ -100,17 +80,17 @@ impl MultiplexedIpc {
             pending.insert(id, tx);
         }
 
-        // Write the frame (uses the dedicated write handle, not the reader's)
+        // Write — brief lock, held only for the write call
         {
             let frame_bytes = transport::serialize_frame(&frame)?;
-            let mut writer = self
-                .writer
+            let mut stream = self
+                .stream
                 .lock()
-                .map_err(|_| AppError::internal("writer lock poisoned"))?;
-            writer
+                .map_err(|_| AppError::internal("stream lock poisoned"))?;
+            stream
                 .write_all(&frame_bytes)
                 .map_err(|e| AppError::from_io("failed to write IPC frame", &self.endpoint, e))?;
-            writer
+            stream
                 .flush()
                 .map_err(|e| AppError::from_io("failed to flush IPC frame", &self.endpoint, e))?;
         }
@@ -144,7 +124,6 @@ impl MultiplexedIpc {
         }
     }
 
-    /// Subscribe to kernel events on this connection.
     pub fn subscribe(
         self: &Arc<Self>,
         event_types: Option<&[String]>,
@@ -168,7 +147,6 @@ impl MultiplexedIpc {
             .and_then(|obj| obj.get("ok"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-
         if !ok {
             return Err(AppError::core_response(confirmation));
         }
@@ -177,29 +155,25 @@ impl MultiplexedIpc {
         Ok(self.events.subscribe())
     }
 
-    /// Background reader loop — uses the dedicated read handle.
-    fn read_loop(
-        &self,
-        endpoint: CoreEndpoint,
-        pending: PendingRequests,
-        events: EventSender,
-    ) {
-        // Take the reader handle — it lives exclusively in this thread
-        let mut reader = {
-            let mut guard = match self.reader.lock() {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            guard.take().expect("reader handle already consumed")
-        };
+    // ── Reader thread ─────────────────────────────────────────────
 
+    fn read_loop(&self, endpoint: CoreEndpoint, pending: PendingRequests, events: EventSender) {
         let mut buf = String::new();
         loop {
-            buf.clear();
-            match Self::read_json_line(&mut *reader, &mut buf, &endpoint) {
+            // Try-lock: if a writer holds the lock, yield briefly and retry.
+            // Writers only hold the lock for write_all + flush (~microseconds),
+            // so contention is rare and short-lived.
+            let result = match self.stream.try_lock() {
+                Ok(mut stream) => Self::read_json_line(&mut *stream, &mut buf, &endpoint),
+                Err(_) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+            };
+
+            match result {
                 Ok(value) => {
                     if value.as_object().map_or(false, |obj| obj.contains_key("ok")) {
-                        // Response frame → resolve pending request by id
                         let id = value
                             .as_object()
                             .and_then(|obj| obj.get("id"))
@@ -214,7 +188,6 @@ impl MultiplexedIpc {
                         } else {
                             Err(AppError::core_response(value))
                         };
-
                         if let Some(id) = id {
                             if let Ok(mut pending) = pending.lock() {
                                 if let Some(tx) = pending.remove(&id) {
@@ -234,7 +207,6 @@ impl MultiplexedIpc {
         }
     }
 
-    /// Read a single JSON-line from the stream.
     fn read_json_line(
         reader: &mut dyn Read,
         buf: &mut String,
@@ -261,12 +233,10 @@ impl MultiplexedIpc {
                     }
                 }
             }
-
             let line = buf.trim();
             if line.is_empty() || line.starts_with(':') {
                 continue;
             }
-
             return serde_json::from_str::<Value>(line).map_err(|error| AppError {
                 code: "internal",
                 message: format!("failed to parse IPC frame: {error}"),
@@ -276,7 +246,7 @@ impl MultiplexedIpc {
     }
 }
 
-// ── Global connection singleton ─────────────────────────────────────
+// ── Global singleton ────────────────────────────────────────────────
 
 use std::sync::OnceLock;
 
@@ -290,11 +260,9 @@ pub(crate) fn get_or_connect(
     let mut guard = cell
         .lock()
         .map_err(|_| AppError::internal("global ipc lock poisoned"))?;
-
     if let Some(ref conn) = *guard {
         return Ok(Arc::clone(conn));
     }
-
     let conn = MultiplexedIpc::connect(endpoint, timeout)?;
     *guard = Some(Arc::clone(&conn));
     Ok(conn)
