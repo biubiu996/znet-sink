@@ -110,7 +110,6 @@ impl MultiplexedConnection {
                 AppError::from_io("failed to flush IPC subscribe frame", &endpoint, error)
             })?;
         }
-
         // Spawn the reader on a dedicated OS thread: it blocks on `read_line`
         // for the connection's entire lifetime and should not occupy a tokio
         // blocking-pool slot.
@@ -249,22 +248,22 @@ fn reader_loop(reader: KernelReader, inner: Arc<Inner>) {
         let is_response = frame
             .as_object()
             .is_some_and(|object| object.contains_key("ok"));
+        let frame_id = frame
+            .get("id")
+            .or_else(|| frame.get("request_id"))
+            .or_else(|| frame.get("requestId"))
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string());
 
         if is_response {
             // Response frame: pair by id with the waiting waiter, if any.
-            if let Some(id) = frame
-                .get("id")
-                .or_else(|| frame.get("request_id"))
-                .or_else(|| frame.get("requestId"))
-                .and_then(|value| value.as_str())
-            {
+            if let Some(id) = frame_id.as_deref() {
                 if let Some(sender) = inner
                     .pending
                     .lock()
                     .expect("IPC pending mutex poisoned")
                     .remove(id)
                 {
-                    // Receiver may have timed out already — ignore send error.
                     let _ = sender.send(Ok(frame));
                 }
             }
