@@ -344,24 +344,42 @@ static MANAGER: LazyLock<Mutex<Option<ManagedConnection>>> = LazyLock::new(|| Mu
 /// Return the live multiplexed connection for `endpoint`, creating one if
 /// none exists, the cached one is dead, or it is bound to a different path.
 ///
-/// Safe to call from a blocking context (it performs blocking connect I/O
-/// when a new connection is needed; the cache-hit path is lock + check +
-/// clone).
+/// The fast path (cache hit) holds the lock only long enough to clone the
+/// cached connection.  The slow path (cold start or dead connection) drops
+/// the lock before calling [`MultiplexedConnection::connect`] (which blocks
+/// for up to `connect_timeout` waiting for the subscribe ack) so that
+/// concurrent callers do not queue up behind a held lock and time out
+/// before the connection is ready.
+///
+/// When two callers race to create the first connection, the second one to
+/// finish simply drops its connection and returns the cached one — only one
+/// multiplexed pipe is ever open at a time.
 pub fn get_or_connect(
     endpoint: CoreEndpoint,
     connect_timeout: Duration,
 ) -> AppResult<MultiplexedConnection> {
     let path = endpoint.path.clone();
-    let mut guard = MANAGER.lock().expect("connection manager mutex poisoned");
 
-    if let Some(managed) = guard.as_ref() {
-        if managed.endpoint_path == path && managed.conn.is_alive() {
-            return Ok(managed.conn.clone());
+    // ── Fast path: check the cache without blocking on connect ──
+    {
+        let guard = MANAGER.lock().expect("connection manager mutex poisoned");
+        if let Some(managed) = guard.as_ref() {
+            if managed.endpoint_path == path && managed.conn.is_alive() {
+                return Ok(managed.conn.clone());
+            }
         }
-        // Stale or wrong endpoint — drop the cache and rebuild.
-    }
+    } // lock dropped here — connect() below does NOT hold it
 
     let conn = MultiplexedConnection::connect(endpoint, connect_timeout)?;
+
+    // ── Publish the new connection, preferring a concurrent winner ──
+    let mut guard = MANAGER.lock().expect("connection manager mutex poisoned");
+    if let Some(managed) = guard.as_ref() {
+        if managed.endpoint_path == path && managed.conn.is_alive() {
+            // Another thread beat us to it — use its connection instead.
+            return Ok(managed.conn.clone());
+        }
+    }
     *guard = Some(ManagedConnection {
         endpoint_path: path,
         conn: conn.clone(),
