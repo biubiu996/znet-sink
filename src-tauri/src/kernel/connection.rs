@@ -32,7 +32,7 @@
 use std::collections::HashMap;
 use std::io::{BufReader, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -69,6 +69,11 @@ struct Inner {
     pending: Mutex<HashMap<String, oneshot::Sender<Result<Value, AppError>>>>,
     event_tx: broadcast::Sender<Value>,
     alive: AtomicBool,
+    /// Set during `connect()` so the reader can signal when the subscribe
+    /// acknowledgement arrives.  Taken by the reader on first response
+    /// frame whose `id` matches [`SUBSCRIBE_FRAME_ID`], then read by
+    /// `connect()` before it returns.
+    subscribe_ack_tx: Mutex<Option<mpsc::SyncSender<()>>>,
 }
 
 impl MultiplexedConnection {
@@ -79,17 +84,19 @@ impl MultiplexedConnection {
         let (reader, writer) = transport::connect_split(&endpoint, connect_timeout)?;
 
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
+        let (subscribe_ack_tx, subscribe_ack_rx) = mpsc::sync_channel(1);
         let inner = Arc::new(Inner {
             endpoint: endpoint.clone(),
             writer: Mutex::new(writer),
             pending: Mutex::new(HashMap::new()),
             event_tx,
             alive: AtomicBool::new(true),
+            subscribe_ack_tx: Mutex::new(Some(subscribe_ack_tx)),
         });
 
         // Initial subscribe — this is what keeps the connection alive on the
-        // kernel side. Its ack (`{"ok":true,...}`) is classified as a
-        // response and dropped (nobody awaits this id), which is fine.
+        // kernel side.  We wait for the ack before returning (see below) so
+        // that the first query cannot race with the subscribe handshake.
         let subscribe_frame = serde_json::json!({
             "type": "subscribe",
             "id": SUBSCRIBE_FRAME_ID,
@@ -118,6 +125,30 @@ impl MultiplexedConnection {
             .name("zero-ipc-reader".to_string())
             .spawn(move || reader_loop(reader, reader_inner))
             .map_err(|error| AppError::internal(format!("failed to spawn IPC reader: {error}")))?;
+
+        // Wait for the kernel to acknowledge the subscribe frame.
+        // Without this the first query can race with the subscribe
+        // handshake — the kernel may not have registered the connection
+        // as persistent yet, so a fast follow-up query can time out.
+        match subscribe_ack_rx.recv_timeout(connect_timeout) {
+            Ok(()) => {} // subscribe confirmed
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                inner.alive.store(false, Ordering::Release);
+                return Err(AppError {
+                    code: "connection_closed",
+                    message: "timed out waiting for kernel subscribe acknowledgement"
+                        .to_string(),
+                    details: Some(serde_json::json!({
+                        "endpoint": endpoint.path,
+                        "timeoutMs": connect_timeout.as_millis(),
+                    })),
+                });
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                inner.alive.store(false, Ordering::Release);
+                return Err(AppError::connection_closed(&endpoint));
+            }
+        }
 
         Ok(Self { inner })
     }
@@ -256,6 +287,20 @@ fn reader_loop(reader: KernelReader, inner: Arc<Inner>) {
             .map(|value| value.to_string());
 
         if is_response {
+            // If this is the subscribe ack, signal the connect() caller
+            // and then drop it — no query waiter exists for this id.
+            if frame_id.as_deref() == Some(SUBSCRIBE_FRAME_ID) {
+                if let Some(tx) = inner
+                    .subscribe_ack_tx
+                    .lock()
+                    .expect("IPC subscribe ack mutex poisoned")
+                    .take()
+                {
+                    let _ = tx.send(());
+                }
+                continue;
+            }
+
             // Response frame: pair by id with the waiting waiter, if any.
             if let Some(id) = frame_id.as_deref() {
                 if let Some(sender) = inner
@@ -267,7 +312,7 @@ fn reader_loop(reader: KernelReader, inner: Arc<Inner>) {
                     let _ = sender.send(Ok(frame));
                 }
             }
-            // Response with no matching id (e.g. the subscribe ack) → drop.
+            // Response with no matching id → drop.
         } else {
             // Event frame: fan out to every subscriber. No subscriber → ignore.
             let _ = inner.event_tx.send(frame);
