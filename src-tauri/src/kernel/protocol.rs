@@ -9,48 +9,11 @@
 
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::config::{DEFAULT_IPC_TIMEOUT_MS, MAX_IPC_TIMEOUT_MS};
 use crate::errors::{AppError, AppResult};
-use crate::models::debug::{DebugFrame, DEBUG_RING_SIZE};
-
-/// Static ring buffer for diagnostic IPC frame capture.
-static DEBUG_FRAMES: std::sync::LazyLock<Mutex<Vec<DebugFrame>>> =
-    std::sync::LazyLock::new(|| Mutex::new(Vec::with_capacity(DEBUG_RING_SIZE)));
-
-static DEBUG_FRAME_ID: AtomicU64 = AtomicU64::new(0);
-
-/// Clear all captured debug frames.
-pub(crate) fn debug_clear() {
-    if let Ok(mut frames) = DEBUG_FRAMES.lock() {
-        frames.clear();
-    }
-}
-
-/// Snapshot of all captured debug frames (newest first).
-pub(crate) fn debug_frames_snapshot() -> Vec<DebugFrame> {
-    DEBUG_FRAMES
-        .lock()
-        .map(|frames| {
-            let mut v = frames.clone();
-            v.reverse(); // newest first
-            v
-        })
-        .unwrap_or_default()
-}
-
-/// Push a frame into the ring buffer, dropping oldest if at capacity.
-fn debug_push(mut frame: DebugFrame) {
-    frame.id = DEBUG_FRAME_ID.fetch_add(1, Ordering::Relaxed);
-    if let Ok(mut frames) = DEBUG_FRAMES.lock() {
-        if frames.len() >= DEBUG_RING_SIZE {
-            frames.remove(0);
-        }
-        frames.push(frame);
-    }
-}
+use crate::models::debug::{DebugFrame, push_debug_frame};
 use crate::kernel::{connection, transport};
 use crate::models::core::{response_id, CoreCallResult, CoreEndpoint, CoreIpcOptions};
 
@@ -147,7 +110,7 @@ pub async fn request(
     let (frame_value, request_id) = ensure_request_id(frame)?;
     let frame_type = frame_type_for_debug(&frame_value);
     // Capture outgoing frame
-    debug_push(DebugFrame {
+    push_debug_frame(DebugFrame {
         id: 0,
         at_ms: crate::services::common::now_unix_ms(),
         direction: "tx",
@@ -191,7 +154,7 @@ pub async fn request(
     // Capture response frame
     match &response {
         Ok(value) => {
-            debug_push(DebugFrame {
+            push_debug_frame(DebugFrame {
                 id: 0,
                 at_ms: crate::services::common::now_unix_ms(),
                 direction: "rx",
@@ -202,7 +165,7 @@ pub async fn request(
             });
         }
         Err(error) => {
-            debug_push(DebugFrame {
+            push_debug_frame(DebugFrame {
                 id: 0,
                 at_ms: crate::services::common::now_unix_ms(),
                 direction: "rx",

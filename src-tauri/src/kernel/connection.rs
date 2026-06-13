@@ -43,6 +43,7 @@ use tokio::time::timeout;
 use crate::errors::{AppError, AppResult};
 use crate::kernel::transport::{self, KernelReader, KernelWriter};
 use crate::models::core::CoreEndpoint;
+use crate::models::debug::{DebugFrame, push_debug_frame};
 
 /// `id` used for the initial `subscribe` frame. Distinct from the
 /// `znet-sink-<n>` request ids so it can never collide with a pending
@@ -178,6 +179,24 @@ impl MultiplexedConnection {
         // and we must not stall the async runtime. The pending slot is
         // already registered so a lightning-fast kernel response can still be
         // paired even while the write is completing.
+        let frame_preview: String = String::from_utf8_lossy(&frame_bytes).into_owned();
+        push_debug_frame(DebugFrame {
+            id: 0,
+            at_ms: crate::services::common::now_unix_ms(),
+            direction: "tx",
+            frame_type: "multiplex".to_string(),
+            payload: serde_json::json!({
+                "requestId": request_id,
+                "bytes": frame_bytes.len(),
+                "preview": if frame_preview.len() > 200 {
+                    format!("{}…", &frame_preview[..200])
+                } else {
+                    frame_preview
+                },
+            }),
+            elapsed_ms: None,
+            error: None,
+        });
         let writer_inner = Arc::clone(&self.inner);
         let write_result = tauri::async_runtime::spawn_blocking(
             move || -> std::io::Result<()> {
@@ -211,24 +230,55 @@ impl MultiplexedConnection {
             }
         }
 
-        eprintln!(
-            "[zgi] req id={request_id} waiting response timeout={}ms",
-            response_timeout.as_millis()
-        );
         match timeout(response_timeout, rx).await {
             Ok(Ok(result)) => {
-                eprintln!("[zgi] req id={request_id} OK");
+                push_debug_frame(DebugFrame {
+                    id: 0,
+                    at_ms: crate::services::common::now_unix_ms(),
+                    direction: "rx",
+                    frame_type: "response".to_string(),
+                    payload: serde_json::json!({
+                        "requestId": request_id,
+                        "status": "ok",
+                    }),
+                    elapsed_ms: None,
+                    error: None,
+                });
                 result
             }
             Ok(Err(_)) => {
                 // Sender dropped without sending — the reader tore the
                 // connection down and drained pending waiters.
-                eprintln!("[zgi] req id={request_id} CONNECTION_CLOSED (reader drained)");
+                push_debug_frame(DebugFrame {
+                    id: 0,
+                    at_ms: crate::services::common::now_unix_ms(),
+                    direction: "rx",
+                    frame_type: "error".to_string(),
+                    payload: serde_json::json!({
+                        "requestId": request_id,
+                        "reason": "connection_closed",
+                    }),
+                    elapsed_ms: None,
+                    error: Some("connection closed (reader drained)".to_string()),
+                });
                 Err(AppError::connection_closed(&endpoint))
             }
             Err(_) => {
-                eprintln!("[zgi] req id={request_id} TIMEOUT after {}ms",
-                    response_timeout.as_millis());
+                push_debug_frame(DebugFrame {
+                    id: 0,
+                    at_ms: crate::services::common::now_unix_ms(),
+                    direction: "rx",
+                    frame_type: "error".to_string(),
+                    payload: serde_json::json!({
+                        "requestId": request_id,
+                        "timeoutMs": response_timeout.as_millis(),
+                    }),
+                    elapsed_ms: Some(response_timeout.as_millis() as u64),
+                    error: Some(format!(
+                        "timeout after {}ms",
+                        response_timeout.as_millis()
+                    )),
+                });
                 self.inner.remove_pending(&request_id);
                 Err(AppError {
                     code: "timeout",
@@ -300,7 +350,15 @@ fn reader_loop(reader: KernelReader, inner: Arc<Inner>) {
             // If this is the subscribe ack, signal the connect() caller
             // and then drop it — no query waiter exists for this id.
             if frame_id.as_deref() == Some(SUBSCRIBE_FRAME_ID) {
-                eprintln!("[zgi] reader SUBSCRIBE_ACK");
+                push_debug_frame(DebugFrame {
+                    id: 0,
+                    at_ms: crate::services::common::now_unix_ms(),
+                    direction: "rx",
+                    frame_type: "subscribe-ack".to_string(),
+                    payload: serde_json::json!({ "subscribed": true }),
+                    elapsed_ms: None,
+                    error: None,
+                });
                 if let Some(tx) = inner
                     .subscribe_ack_tx
                     .lock()
@@ -324,11 +382,38 @@ fn reader_loop(reader: KernelReader, inner: Arc<Inner>) {
                 if let Some(sender) = sender {
                     let _ = sender.send(Ok(frame));
                 }
-                eprintln!(
-                    "[zgi] reader RESP id={id} matched={matched} ok={ok}"
-                );
+                push_debug_frame(DebugFrame {
+                    id: 0,
+                    at_ms: crate::services::common::now_unix_ms(),
+                    direction: "rx",
+                    frame_type: "response".to_string(),
+                    payload: serde_json::json!({
+                        "requestId": id,
+                        "matched": matched,
+                        "ok": ok,
+                    }),
+                    elapsed_ms: None,
+                    error: None,
+                });
             } else {
-                eprintln!("[zgi] reader RESP no-id (dropped)");
+                // No id on this response — log a snippet so we can identify
+                // what the kernel is sending.
+                let snippet: String = serde_json::to_string(&frame)
+                    .unwrap_or_else(|_| "<invalid>".to_string());
+                let preview: String = if snippet.len() > 200 {
+                    format!("{}…", &snippet[..200])
+                } else {
+                    snippet
+                };
+                push_debug_frame(DebugFrame {
+                    id: 0,
+                    at_ms: crate::services::common::now_unix_ms(),
+                    direction: "rx",
+                    frame_type: "orphan-response".to_string(),
+                    payload: serde_json::json!({ "preview": preview }),
+                    elapsed_ms: None,
+                    error: Some("no matching request id".to_string()),
+                });
             }
             // Response with no matching id → drop.
         } else {
@@ -338,7 +423,17 @@ fn reader_loop(reader: KernelReader, inner: Arc<Inner>) {
                 .or_else(|| frame.get("type"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("?");
-            eprintln!("[zgi] reader EVENT type={event_type}");
+            push_debug_frame(DebugFrame {
+                id: 0,
+                at_ms: crate::services::common::now_unix_ms(),
+                direction: "rx",
+                frame_type: "event".to_string(),
+                payload: serde_json::json!({
+                    "eventType": event_type,
+                }),
+                elapsed_ms: None,
+                error: None,
+            });
             let _ = inner.event_tx.send(frame);
         }
     }
