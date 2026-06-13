@@ -182,6 +182,7 @@ pub fn run() {
             gui_core_commands::gui_traffic_stats,
             gui_core_commands::gui_traffic_snapshot,
             gui_core_commands::gui_policy_groups,
+            gui_core_commands::gui_config_policy_groups,
             gui_core_commands::gui_proxy_nodes,
             gui_core_commands::gui_select_policy,
             gui_core_commands::gui_probe_target,

@@ -36,39 +36,117 @@
   }
 
   // ── Data derivation ──
-  const groups = $derived(guiState.policyGroups);
+  // Sidebar groups: config skeleton first, runtime as fallback.
+  // Config groups have the structure (names, kinds, outbound list) but
+  // no runtime state.  We merge `selected` from runtime policyGroups
+  // when the kernel is connected.
+  const groups = $derived.by(() => {
+    const config = guiState.configPolicyGroups;
+    const runtime = guiState.policyGroups;
 
-  const groupNodes = $derived.by((): ProxyNode[] => {
-    if (groups.length === 0) return [];
-    const seen = new Set<string>();
-    const nodes: ProxyNode[] = [];
+    // Build a lookup of selected tag per group from runtime data
+    const runtimeSelected = new Map<string, string | undefined>();
+    for (const rg of runtime) {
+      if (rg.selected) runtimeSelected.set(rg.name, rg.selected);
+    }
+
+    if (config.length > 0) {
+      return config.map(cg => ({
+        ...cg,
+        selected: runtimeSelected.get(cg.name) ?? cg.selected,
+      }));
+    }
+
+    return runtime;
+  });
+
+  // ── Primary node list: config file nodes (static skeleton) with
+  //     runtime status (selected, delay, alive) layered on top.
+  //     Uses $effect → $state instead of $derived.by to ensure
+  //     cross-module $state tracking (guiState.configNodes) is
+  //     properly detected across the async load boundary. ──
+  let allNodes = $state<ProxyNode[]>([]);
+
+  $effect(() => {
+    // Touch all reactive sources at the top so Svelte tracks them
+    const cnodes = guiState.configNodes;
+    void groups; // ensure groups is tracked
+
+    // Build runtime overlay from policy groups (if kernel is connected)
+    const overlay = new Map<string, { selected: boolean; delayMs?: number; alive?: boolean; groupName: string; kind?: string }>();
     for (const group of groups) {
-      for (const outbound of group.outbounds) {
-        const key = outbound.tag.toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const probe = probeResults[outbound.tag];
-        nodes.push({
-          id: `${group.name}:${outbound.tag}`,
-          name: outbound.tag,
-          protocol: outbound.type || 'Zero',
-          delay: probe?.delayMs ?? outbound.delayMs ?? 0,
-          domain: group.selected === outbound.tag ? 'selected' : (probe?.alive ?? outbound.alive) === false ? 'unavailable' : group.name,
+      for (const ob of group.outbounds) {
+        overlay.set(ob.tag, {
+          selected: group.selected === ob.tag,
+          delayMs: ob.delayMs,
+          alive: ob.alive,
+          groupName: group.name,
+          kind: ob.type,
         });
       }
     }
-    return nodes;
-  });
 
-  const allNodes = $derived(groupNodes.length > 0 ? groupNodes : overviewData.proxyNodes);
+    // ── Path 1: config nodes from static config file (works without kernel) ──
+    if (cnodes.length > 0) {
+      allNodes = cnodes
+        .filter(cn => !cn.isSelector)
+        .map(cn => {
+          const rt = overlay.get(cn.tag);
+          const probe = probeResults[cn.tag];
+          const delay = probe?.delayMs ?? rt?.delayMs ?? 0;
+          const alive = probe?.alive ?? rt?.alive;
+          const isSelected = rt?.selected ?? false;
+          return {
+            id: cn.tag,
+            name: cn.tag,
+            protocol: cn.protocol !== 'unknown' ? cn.protocol : (rt?.kind ?? 'Zero'),
+            delay,
+            domain: isSelected ? 'selected'
+              : alive === false ? 'unavailable'
+              : rt?.groupName ?? 'policy',
+          };
+        });
+      return;
+    }
+
+    // ── Path 2: runtime groups (kernel connected, no static config) ──
+    if (groups.length > 0) {
+      const seen = new Set<string>();
+      const nodes: ProxyNode[] = [];
+      for (const group of groups) {
+        for (const outbound of group.outbounds) {
+          const key = outbound.tag.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const probe = probeResults[outbound.tag];
+          nodes.push({
+            id: `${group.name}:${outbound.tag}`,
+            name: outbound.tag,
+            protocol: outbound.type || 'Zero',
+            delay: probe?.delayMs ?? outbound.delayMs ?? 0,
+            domain: group.selected === outbound.tag ? 'selected' : (probe?.alive ?? outbound.alive) === false ? 'unavailable' : group.name,
+          });
+        }
+      }
+      allNodes = nodes;
+      return;
+    }
+
+    // ── Path 3: last resort — any data scraped from events ──
+    allNodes = overviewData.proxyNodes;
+  });
 
   const filteredNodes = $derived.by(() => {
     let nodes = allNodes;
     if (selectedGroup) {
       const group = groups.find(g => g.name === selectedGroup);
-      if (group) {
+      if (group && group.outbounds.length > 0) {
         const tags = new Set(group.outbounds.map(o => o.tag));
-        nodes = nodes.filter(n => tags.has(n.name));
+        const matched = nodes.filter(n => tags.has(n.name));
+        // Defensive: only apply group filter if it doesn't empty the list.
+        // A group may exist in config but have no outbounds loaded yet
+        // from the kernel, which would incorrectly hide all nodes.
+        if (matched.length > 0) nodes = matched;
       }
     }
     if (searchQuery.trim()) {
@@ -254,7 +332,11 @@
     {/each}
 
     {#if groups.length === 0}
-      <div class="group-empty">等待策略数据…</div>
+      {#if allNodes.length > 0}
+        <div class="group-empty">配置节点 ({allNodes.length})</div>
+      {:else}
+        <div class="group-empty">等待数据…</div>
+      {/if}
     {/if}
   </aside>
 

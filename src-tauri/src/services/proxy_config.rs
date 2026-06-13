@@ -171,6 +171,25 @@ pub fn set_active(state: State<'_, AppState>, id: String) -> AppResult<ProxyConf
     Ok(active)
 }
 
+/// Mirror a hot-applied config into the active profile's `content`.
+///
+/// Called after the kernel accepts `config.apply` so that config-derived
+/// views (proxy nodes, policy groups) and the next core-process start —
+/// which exports `content` to disk via `core_config::export_active` — both
+/// reflect the live configuration. Re-derives capabilities and bumps
+/// `updated_at`. No-op when no profile is active.
+pub fn update_active_content(state: &AppState, content: Value) -> AppResult<()> {
+    let mut profiles = lock(state.proxy_configs(), "proxy_config")?;
+    let Some(active) = profiles.iter_mut().find(|profile| profile.active) else {
+        return Ok(());
+    };
+    active.capabilities = analyze_capabilities(Some(&content));
+    active.content = Some(content);
+    active.updated_at_unix_ms = now_unix_ms();
+    domain_store::save_proxy_configs(&profiles)?;
+    Ok(())
+}
+
 pub fn remove(state: State<'_, AppState>, id: String) -> AppResult<()> {
     let id = normalize_required(id, "id")?;
     let mut profiles = lock(state.proxy_configs(), "proxy_config")?;

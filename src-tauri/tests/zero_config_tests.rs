@@ -1,6 +1,5 @@
 use serde_json::json;
-
-use crate::kernel::zero::config;
+use gui_lib::kernel::zero::config;
 
 #[test]
 fn proxy_nodes_extracts_outbounds() {
@@ -52,18 +51,18 @@ fn policy_groups_from_config_accepts_outbound_groups() {
     }));
 
     assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].tag, "proxy");
+    assert_eq!(groups[0].name, "proxy");
     assert_eq!(groups[0].selected.as_deref(), Some("server-b"));
     assert_eq!(
         groups[0]
-            .members
+            .outbounds
             .iter()
             .map(|m| m.tag.as_str())
             .collect::<Vec<_>>(),
         vec!["server-a", "server-b", "direct"]
     );
-    assert_eq!(groups[0].members[0].kind.as_deref(), Some("trojan"));
-    assert!(groups[0].members[1].selected);
+    assert_eq!(groups[0].outbounds[0].kind.as_deref(), Some("trojan"));
+    assert!(groups[0].outbounds[1].selected);
 }
 
 #[test]
@@ -86,7 +85,7 @@ fn policy_groups_handles_proxy_groups_key() {
     }));
 
     assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0].tag, "auto");
+    assert_eq!(groups[0].name, "auto");
     assert_eq!(groups[0].kind, "url_test");
 }
 
@@ -108,4 +107,78 @@ fn proxy_nodes_defaults_to_unknown() {
     }));
 
     assert_eq!(nodes[0].protocol, "unknown");
+}
+
+#[test]
+fn real_world_config_extracts_nodes_and_policy_group() {
+    let config = json!({
+        "inbounds": [{
+            "listen": { "address": "127.0.0.1", "port": 15581 },
+            "protocol": { "type": "mixed" },
+            "tag": "socks-in"
+        }],
+        "outbound_groups": [{
+            "outbounds": ["ss-in", "tr-sg", "direct"],
+            "tag": "proxy",
+            "type": "selector"
+        }],
+        "outbounds": [
+            { "protocol": { "type": "direct" }, "tag": "direct" },
+            {
+                "protocol": {
+                    "cipher": "chacha20-ietf-poly1305",
+                    "password": "redacted",
+                    "port": 37077,
+                    "server": "redacted.example.com",
+                    "type": "shadowsocks"
+                },
+                "tag": "ss-in"
+            },
+            {
+                "protocol": {
+                    "insecure": true,
+                    "password": "redacted",
+                    "port": 14688,
+                    "server": "redacted.example.com",
+                    "sni": "redacted.example.com",
+                    "type": "trojan"
+                },
+                "tag": "tr-sg"
+            }
+        ],
+        "route": {
+            "final": { "type": "direct" },
+            "mode": { "type": "rule" },
+            "rules": []
+        }
+    });
+
+    let nodes = config::proxy_nodes_from_config(&config);
+    assert_eq!(nodes.len(), 3);
+    assert_eq!(nodes[0].tag, "direct");
+    assert_eq!(nodes[0].protocol, "direct");
+    assert_eq!(nodes[1].tag, "ss-in");
+    assert_eq!(nodes[1].protocol, "shadowsocks");
+    assert_eq!(nodes[2].tag, "tr-sg");
+    assert_eq!(nodes[2].protocol, "trojan");
+
+    let groups = config::policy_groups_from_config(&config);
+    assert_eq!(groups.len(), 1, "expected one policy group");
+    assert_eq!(groups[0].name, "proxy");
+    assert_eq!(groups[0].kind, "selector");
+    assert_eq!(groups[0].selected, None, "no selected field in this config");
+
+    let member_tags: Vec<&str> = groups[0]
+        .outbounds
+        .iter()
+        .map(|m| m.tag.as_str())
+        .collect();
+    assert_eq!(member_tags, vec!["ss-in", "tr-sg", "direct"]);
+
+    let member_kinds: Vec<&str> = groups[0]
+        .outbounds
+        .iter()
+        .filter_map(|m| m.kind.as_deref())
+        .collect();
+    assert_eq!(member_kinds, vec!["shadowsocks", "trojan", "direct"]);
 }

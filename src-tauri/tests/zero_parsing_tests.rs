@@ -1,10 +1,11 @@
 use serde_json::json;
+use gui_lib::kernel::zero::parsing;
 
-use crate::kernel::zero::parsing::*;
+// ── stats ──
 
 #[test]
 fn parse_stats_accepts_current_zero_fields() {
-    let stats = parse_stats(&json!({
+    let stats = parsing::parse_stats(&json!({
         "active_sessions": 2,
         "total_started": 10,
         "completed_sessions": 7,
@@ -22,9 +23,11 @@ fn parse_stats_accepts_current_zero_fields() {
     assert_eq!(stats.bytes_down, 3400);
 }
 
+// ── health ──
+
 #[test]
 fn parse_health_maps_engine_build_id() {
-    let health = parse_health(&json!({
+    let health = parsing::parse_health(&json!({
         "engine_build_id": "0.0.9",
         "started_at_unix_ms": 1713500000000_u64,
         "healthy": true
@@ -37,7 +40,7 @@ fn parse_health_maps_engine_build_id() {
 
 #[test]
 fn parse_health_strips_v_prefix() {
-    let health = parse_health(&json!({
+    let health = parsing::parse_health(&json!({
         "engine_build_id": "v0.0.5",
         "healthy": true
     }));
@@ -47,16 +50,18 @@ fn parse_health_strips_v_prefix() {
 
 #[test]
 fn parse_health_defaults_healthy_when_missing() {
-    let health = parse_health(&json!({}));
+    let health = parsing::parse_health(&json!({}));
 
     assert!(health.healthy);
     assert!(health.engine_version.is_none());
     assert!(health.started_at_unix_ms.is_none());
 }
 
+// ── capabilities ──
+
 #[test]
 fn parse_capabilities_maps_api_id_field() {
-    let caps = parse_capabilities(
+    let caps = parsing::parse_capabilities(
         &json!({
             "api_id": "zero.api.v1",
             "schema_id": "zero.event.v1",
@@ -79,15 +84,17 @@ fn parse_capabilities_maps_api_id_field() {
 
 #[test]
 fn parse_capabilities_captures_error() {
-    let caps = parse_capabilities(&json!({}), Some("connection refused".to_string()));
+    let caps = parsing::parse_capabilities(&json!({}), Some("connection refused".to_string()));
 
     assert!(!caps.available);
     assert_eq!(caps.error.as_deref(), Some("connection refused"));
 }
 
+// ── connections ──
+
 #[test]
 fn parse_connection_accepts_nested_target() {
-    let conn = parse_connection(&json!({
+    let conn = parsing::parse_connection(&json!({
         "flow_id": "42",
         "network": "tcp",
         "target": { "host": "example.com", "port": 443 },
@@ -106,7 +113,7 @@ fn parse_connection_accepts_nested_target() {
 
 #[test]
 fn parse_connection_accepts_flat_destination() {
-    let conn = parse_connection(&json!({
+    let conn = parsing::parse_connection(&json!({
         "flow_id": "1",
         "host": "1.2.3.4",
         "port": 80,
@@ -122,12 +129,14 @@ fn parse_connection_accepts_flat_destination() {
 
 #[test]
 fn parse_connection_returns_none_without_flow_id() {
-    assert!(parse_connection(&json!({ "host": "x" })).is_none());
+    assert!(parsing::parse_connection(&json!({ "host": "x" })).is_none());
 }
+
+// ── envelope ──
 
 #[test]
 fn unwrap_core_envelope_strips_ok_result() {
-    let value = unwrap_core_envelope(json!({
+    let value = parsing::unwrap_core_envelope(json!({
         "ok": true,
         "result": { "engine_build_id": "0.0.9" }
     }))
@@ -138,7 +147,7 @@ fn unwrap_core_envelope_strips_ok_result() {
 
 #[test]
 fn unwrap_core_envelope_rejects_ok_false() {
-    let err = unwrap_core_envelope(json!({
+    let err = parsing::unwrap_core_envelope(json!({
         "ok": false,
         "error": { "code": "not_found", "message": "nope" }
     }))
@@ -149,15 +158,15 @@ fn unwrap_core_envelope_rejects_ok_false() {
 
 #[test]
 fn unwrap_core_envelope_passes_through_non_envelope() {
-    let value = unwrap_core_envelope(json!({ "foo": "bar" })).unwrap();
+    let value = parsing::unwrap_core_envelope(json!({ "foo": "bar" })).unwrap();
     assert_eq!(value["foo"], json!("bar"));
 }
 
-// ── QueryResponse variant unwrapping tests ─────────────────────────
+// ── QueryResponse variant unwrapping ──
 
 #[test]
 fn unwrap_query_variant_strips_health_key() {
-    let result = unwrap_query_variant(
+    let result = parsing::unwrap_query_variant(
         json!({
             "ok": true,
             "result": {
@@ -178,7 +187,7 @@ fn unwrap_query_variant_strips_health_key() {
 
 #[test]
 fn unwrap_query_variant_strips_capabilities_key() {
-    let result = unwrap_query_variant(
+    let result = parsing::unwrap_query_variant(
         json!({
             "ok": true,
             "result": {
@@ -201,7 +210,7 @@ fn unwrap_query_variant_strips_capabilities_key() {
 
 #[test]
 fn unwrap_query_variant_strips_active_flows_key() {
-    let result = unwrap_query_variant(
+    let result = parsing::unwrap_query_variant(
         json!({
             "ok": true,
             "result": {
@@ -221,7 +230,7 @@ fn unwrap_query_variant_strips_active_flows_key() {
 
 #[test]
 fn unwrap_query_variant_strips_tun_status_key() {
-    let result = unwrap_query_variant(
+    let result = parsing::unwrap_query_variant(
         json!({
             "ok": true,
             "result": {
@@ -243,7 +252,7 @@ fn unwrap_query_variant_strips_tun_status_key() {
 
 #[test]
 fn unwrap_query_variant_falls_back_to_flat_shape() {
-    let result = unwrap_query_variant(
+    let result = parsing::unwrap_query_variant(
         json!({
             "ok": true,
             "result": {
@@ -255,13 +264,12 @@ fn unwrap_query_variant_falls_back_to_flat_shape() {
     )
     .unwrap();
 
-    // No "health" key inside result → returns the raw result
     assert_eq!(result["engine_build_id"], json!("0.0.8"));
 }
 
 #[test]
 fn unwrap_query_variant_rejects_ok_false() {
-    let err = unwrap_query_variant(
+    let err = parsing::unwrap_query_variant(
         json!({
             "ok": false,
             "error": { "code": "not_found", "message": "nope" }
@@ -275,7 +283,6 @@ fn unwrap_query_variant_rejects_ok_false() {
 
 #[test]
 fn full_health_roundtrip_with_variant() {
-    // Simulate the full IPC response → unwrap → parse pipeline
     let response = json!({
         "api_id": "zero.api.v1",
         "ok": true,
@@ -289,8 +296,8 @@ fn full_health_roundtrip_with_variant() {
         }
     });
 
-    let inner = unwrap_query_variant(response, "health").unwrap();
-    let health = parse_health(&inner);
+    let inner = parsing::unwrap_query_variant(response, "health").unwrap();
+    let health = parsing::parse_health(&inner);
 
     assert!(health.healthy);
     assert_eq!(health.engine_version.as_deref(), Some("0.0.10"));
@@ -314,8 +321,8 @@ fn full_capabilities_roundtrip_with_variant() {
         }
     });
 
-    let inner = unwrap_query_variant(response, "capabilities").unwrap();
-    let caps = parse_capabilities(&inner, None);
+    let inner = parsing::unwrap_query_variant(response, "capabilities").unwrap();
+    let caps = parsing::parse_capabilities(&inner, None);
 
     assert!(caps.available);
     assert_eq!(caps.features, vec!["query", "config_snapshot", "runtime_snapshot"]);
@@ -338,44 +345,46 @@ fn full_active_flows_roundtrip_with_variant() {
         }
     });
 
-    let inner = unwrap_query_variant(response, "active_flows").unwrap();
-    let list = parse_connection_list(&inner, 100);
+    let inner = parsing::unwrap_query_variant(response, "active_flows").unwrap();
+    let list = parsing::parse_connection_list(&inner, 100);
 
     assert_eq!(list.items.len(), 1);
     assert_eq!(list.items[0].flow_id, "abc-123");
     assert_eq!(list.items[0].destination, "example.com:443");
 }
 
+// ── utility functions ──
+
 #[test]
 fn string_at_finds_first_matching_key() {
     let v = json!({ "b": "found" });
-    assert_eq!(string_at(&v, &["a", "b", "c"]), Some("found".to_string()));
+    assert_eq!(parsing::string_at(&v, &["a", "b", "c"]), Some("found".to_string()));
 }
 
 #[test]
 fn u64_at_handles_string_numbers() {
     let v = json!({ "count": "42" });
-    assert_eq!(u64_at(&v, &["count"]), Some(42));
+    assert_eq!(parsing::u64_at(&v, &["count"]), Some(42));
 }
 
 #[test]
 fn bool_at_handles_string_booleans() {
     let v = json!({ "flag": "yes" });
-    assert_eq!(bool_at(&v, &["flag"]), Some(true));
+    assert_eq!(parsing::bool_at(&v, &["flag"]), Some(true));
 }
 
 #[test]
 fn normalize_version_strips_v_prefix() {
-    assert_eq!(normalize_version(Some("v0.0.5".to_string())), Some("0.0.5".to_string()));
-    assert_eq!(normalize_version(Some("0.0.5".to_string())), Some("0.0.5".to_string()));
-    assert_eq!(normalize_version(None), None);
+    assert_eq!(parsing::normalize_version(Some("v0.0.5".to_string())), Some("0.0.5".to_string()));
+    assert_eq!(parsing::normalize_version(Some("0.0.5".to_string())), Some("0.0.5".to_string()));
+    assert_eq!(parsing::normalize_version(None), None);
 }
 
-// ── plan_apply result parsing tests ──────────────────────────────────
+// ── plan_apply result parsing ──
 
 #[test]
 fn plan_apply_parses_full_impact_analysis() {
-    let result = parse_plan_apply_result(&json!({
+    let result = parsing::parse_plan_apply_result(&json!({
         "valid": true,
         "hot_reload": [
             { "section": "outbounds", "tags": ["proxy-us", "proxy-jp"], "detail": "2 outbound proxies updated" },
@@ -404,7 +413,7 @@ fn plan_apply_parses_full_impact_analysis() {
 
 #[test]
 fn plan_apply_parses_hot_reload_only() {
-    let result = parse_plan_apply_result(&json!({
+    let result = parsing::parse_plan_apply_result(&json!({
         "valid": true,
         "hot_reload": [
             { "section": "outbounds", "tags": ["proxy-sg"], "detail": "1 outbound updated" }
@@ -422,7 +431,7 @@ fn plan_apply_parses_hot_reload_only() {
 
 #[test]
 fn plan_apply_parses_restart_only() {
-    let result = parse_plan_apply_result(&json!({
+    let result = parsing::parse_plan_apply_result(&json!({
         "valid": true,
         "hot_reload": [],
         "requires_restart": [
@@ -443,7 +452,7 @@ fn plan_apply_parses_restart_only() {
 
 #[test]
 fn plan_apply_parses_invalid_config() {
-    let result = parse_plan_apply_result(&json!({
+    let result = parsing::parse_plan_apply_result(&json!({
         "valid": false,
         "hot_reload": [],
         "requires_restart": [],
@@ -460,8 +469,7 @@ fn plan_apply_parses_invalid_config() {
 
 #[test]
 fn plan_apply_unwraps_result_envelope() {
-    // Kernel may return { ok: true, result: { valid, hot_reload, ... } }
-    let result = parse_plan_apply_result(&json!({
+    let result = parsing::parse_plan_apply_result(&json!({
         "valid": true,
         "result": {
             "valid": true,
@@ -474,7 +482,6 @@ fn plan_apply_unwraps_result_envelope() {
         }
     }));
 
-    // When outer `result` key is present, the parser should unwrap into it
     assert!(result.valid);
     assert_eq!(result.hot_reload.len(), 1);
     assert_eq!(result.hot_reload[0].section, "config");
@@ -483,7 +490,7 @@ fn plan_apply_unwraps_result_envelope() {
 
 #[test]
 fn plan_apply_defaults_to_empty_on_minimal_input() {
-    let result = parse_plan_apply_result(&json!({
+    let result = parsing::parse_plan_apply_result(&json!({
         "valid": true
     }));
 
@@ -496,9 +503,8 @@ fn plan_apply_defaults_to_empty_on_minimal_input() {
 
 #[test]
 fn plan_apply_defaults_valid_to_true_when_missing() {
-    let result = parse_plan_apply_result(&json!({}));
+    let result = parsing::parse_plan_apply_result(&json!({}));
 
-    // Tolerant: missing `valid` defaults to true
     assert!(result.valid);
     assert!(result.hot_reload.is_empty());
     assert!(result.requires_restart.is_empty());
@@ -506,7 +512,7 @@ fn plan_apply_defaults_valid_to_true_when_missing() {
 
 #[test]
 fn plan_apply_tolerates_missing_detail_in_items() {
-    let result = parse_plan_apply_result(&json!({
+    let result = parsing::parse_plan_apply_result(&json!({
         "valid": true,
         "hot_reload": [
             { "section": "outbounds", "tags": ["proxy-us"] }
@@ -519,17 +525,14 @@ fn plan_apply_tolerates_missing_detail_in_items() {
     }));
 
     assert_eq!(result.hot_reload[0].detail, "");
-    assert!(result.hot_reload[0].tags.is_empty() == false);
+    assert!(!result.hot_reload[0].tags.is_empty());
     assert_eq!(result.requires_restart[0].detail, "");
     assert!(result.requires_restart[0].tags.is_empty());
 }
 
 #[test]
 fn plan_accepts_alternative_item_key_names() {
-    // Parser accepts "key"/"name" as aliases for "section",
-    // "description"/"message" as aliases for "detail",
-    // "affected" as alias for "tags"
-    let result = parse_plan_apply_result(&json!({
+    let result = parsing::parse_plan_apply_result(&json!({
         "valid": true,
         "hot_reload": [
             { "name": "routing", "affected": ["rule-a", "rule-b"], "description": "2 rules changed" }
@@ -546,4 +549,80 @@ fn plan_accepts_alternative_item_key_names() {
     assert_eq!(result.hot_reload[0].detail, "2 rules changed");
     assert_eq!(result.requires_restart[0].section, "dns");
     assert_eq!(result.requires_restart[0].detail, "DNS upstream changed");
+}
+
+// ── probe target parsing ──
+
+#[test]
+fn target_probe_accepts_diagnostics_probe_target_response() {
+    let result = parsing::parse_target_probe(
+        &json!({
+            "target_tag": "server-a",
+            "server": "1.2.3.4",
+            "port": 443,
+            "reachable": true,
+            "latency_ms": 32
+        }),
+        "fallback".to_string(),
+    );
+
+    assert_eq!(result.target_tag, "server-a");
+    assert!(result.reachable);
+    assert_eq!(result.latency_ms, Some(32));
+    assert_eq!(result.server.as_deref(), Some("1.2.3.4"));
+    assert_eq!(result.port, Some(443));
+}
+
+#[test]
+fn target_probe_handles_unreachable() {
+    let result = parsing::parse_target_probe(
+        &json!({
+            "target_tag": "dead",
+            "reachable": false,
+            "message": "connection refused"
+        }),
+        "dead".to_string(),
+    );
+
+    assert!(!result.reachable);
+    assert!(result.latency_ms.is_none());
+    assert_eq!(result.message.as_deref(), Some("connection refused"));
+}
+
+#[test]
+fn target_probe_uses_fallback_tag_when_missing() {
+    let result = parsing::parse_target_probe(
+        &json!({ "reachable": true }),
+        "fallback-tag".to_string(),
+    );
+
+    assert_eq!(result.target_tag, "fallback-tag");
+}
+
+#[test]
+fn target_probe_accepts_latency_ms_field() {
+    let result = parsing::parse_target_probe(
+        &json!({
+            "target_tag": "x",
+            "reachable": true,
+            "latency_ms": 50
+        }),
+        "x".to_string(),
+    );
+
+    assert_eq!(result.latency_ms, Some(50));
+}
+
+#[test]
+fn target_probe_accepts_delay_ms_field() {
+    let result = parsing::parse_target_probe(
+        &json!({
+            "target_tag": "x",
+            "reachable": true,
+            "delay_ms": 75
+        }),
+        "x".to_string(),
+    );
+
+    assert_eq!(result.latency_ms, Some(75));
 }

@@ -18,7 +18,7 @@ use crate::models::gui_core::{
 // ── Response envelope helpers ───────────────────────────────────────
 
 /// Unwrap a `CoreCallResult`'s optional response/error into a raw `Value`.
-pub(crate) fn unwrap_call_result(
+pub fn unwrap_call_result(
     response: Option<Value>,
     error: Option<AppError>,
 ) -> AppResult<Value> {
@@ -34,7 +34,7 @@ pub(crate) fn unwrap_call_result(
 ///
 /// If `ok` is `false`, returns an error. Otherwise returns the `result`
 /// field (or the raw object if no envelope is detected).
-pub(crate) fn unwrap_core_envelope(response: Value) -> AppResult<Value> {
+pub fn unwrap_core_envelope(response: Value) -> AppResult<Value> {
     let Some(object) = response.as_object() else {
         return Ok(response);
     };
@@ -61,7 +61,7 @@ pub(crate) fn unwrap_core_envelope(response: Value) -> AppResult<Value> {
 /// variant unwrapping in queries.rs). This combined helper is kept for
 /// test ergonomics.
 #[allow(dead_code)]
-pub(crate) fn unwrap_query_variant(
+pub fn unwrap_query_variant(
     response: Value,
     variant: &str,
 ) -> AppResult<Value> {
@@ -80,7 +80,7 @@ pub(crate) fn unwrap_query_variant(
 
 // ── Parsers ─────────────────────────────────────────────────────────
 
-pub(crate) fn parse_health(value: &Value) -> GuiCoreHealth {
+pub fn parse_health(value: &Value) -> GuiCoreHealth {
     GuiCoreHealth {
         healthy: bool_at(value, &["healthy"]).unwrap_or(true),
         engine_version: normalize_version(string_at(
@@ -99,7 +99,7 @@ pub(crate) fn parse_health(value: &Value) -> GuiCoreHealth {
     }
 }
 
-pub(crate) fn parse_stats(value: &Value) -> GuiTrafficStats {
+pub fn parse_stats(value: &Value) -> GuiTrafficStats {
     let stats = nested_value(value, &["stats"]).unwrap_or(value);
     GuiTrafficStats {
         active_sessions: u64_at(stats, &["active_sessions", "activeSessions"]).unwrap_or(0),
@@ -115,7 +115,7 @@ pub(crate) fn parse_stats(value: &Value) -> GuiTrafficStats {
     }
 }
 
-pub(crate) fn parse_capabilities(value: &Value, error: Option<String>) -> GuiZeroCapabilities {
+pub fn parse_capabilities(value: &Value, error: Option<String>) -> GuiZeroCapabilities {
     GuiZeroCapabilities {
         available: error.is_none(),
         api_version: string_at(value, &["api_id", "api_version", "apiVersion"]),
@@ -130,7 +130,7 @@ pub(crate) fn parse_capabilities(value: &Value, error: Option<String>) -> GuiZer
     }
 }
 
-pub(crate) fn parse_policy_groups(value: &Value) -> Vec<GuiPolicyGroup> {
+pub fn parse_policy_groups(value: &Value) -> Vec<GuiPolicyGroup> {
     values_from_container(
         value,
         &[
@@ -153,11 +153,11 @@ fn parse_policy_group(value: Value) -> Option<GuiPolicyGroup> {
     let members = parse_policy_members(&value, selected.as_deref());
 
     Some(GuiPolicyGroup {
-        tag,
+        name: tag,
         kind: string_at(&value, &["policy_kind", "policyKind", "kind", "type"])
             .unwrap_or_else(|| "unknown".to_string()),
         selected,
-        members,
+        outbounds: members,
         available: bool_at(&value, &["available", "healthy"]).unwrap_or(true),
         reason: string_at(&value, &["reason", "error", "message"]),
     })
@@ -167,6 +167,7 @@ fn parse_policy_members(value: &Value, selected: Option<&str>) -> Vec<GuiPolicyM
     values_from_container(
         value,
         &[
+            "url_test_members",
             "members",
             "targets",
             "children",
@@ -183,7 +184,7 @@ fn parse_policy_members(value: &Value, selected: Option<&str>) -> Vec<GuiPolicyM
 fn parse_policy_member(value: Value, selected: Option<&str>) -> Option<GuiPolicyMember> {
     let tag = match &value {
         Value::String(tag) => tag.clone(),
-        other => string_at(other, &["tag", "name", "id", "target"])?,
+        other => string_at(other, &["member_tag", "tag", "name", "id", "target"])?,
     };
     let source = if value.is_object() { Some(value) } else { None };
     let kind = source
@@ -205,7 +206,7 @@ fn parse_policy_member(value: Value, selected: Option<&str>) -> Option<GuiPolicy
     })
 }
 
-pub(crate) fn parse_policy_selection(
+pub fn parse_policy_selection(
     value: &Value,
     policy_tag: String,
     target_tag: String,
@@ -220,7 +221,7 @@ pub(crate) fn parse_policy_selection(
     }
 }
 
-pub(crate) fn parse_target_probe(value: &Value, target_tag: String) -> GuiTargetProbeResult {
+pub fn parse_target_probe(value: &Value, target_tag: String) -> GuiTargetProbeResult {
     let result = nested_value(value, &["result"]).unwrap_or(value);
     GuiTargetProbeResult {
         target_tag: string_at(result, &["target_tag", "targetTag"]).unwrap_or(target_tag),
@@ -235,7 +236,7 @@ pub(crate) fn parse_target_probe(value: &Value, target_tag: String) -> GuiTarget
     }
 }
 
-pub(crate) fn parse_connection_list(value: &Value, limit: u32) -> GuiConnectionList {
+pub fn parse_connection_list(value: &Value, limit: u32) -> GuiConnectionList {
     let items = values_from_container(value, &["flows", "connections", "items", "data", "active"])
         .into_iter()
         .filter_map(|value| parse_connection(&value))
@@ -248,7 +249,7 @@ pub(crate) fn parse_connection_list(value: &Value, limit: u32) -> GuiConnectionL
     }
 }
 
-pub(crate) fn parse_connection(value: &Value) -> Option<GuiConnection> {
+pub fn parse_connection(value: &Value) -> Option<GuiConnection> {
     let flow_id = string_at(
         value,
         &["flow_id", "flowId", "id", "connection_id", "connectionId"],
@@ -309,7 +310,7 @@ pub(crate) fn parse_connection(value: &Value) -> Option<GuiConnection> {
     })
 }
 
-pub(crate) fn parse_connection_close(value: &Value, flow_id: String) -> GuiConnectionCloseResult {
+pub fn parse_connection_close(value: &Value, flow_id: String) -> GuiConnectionCloseResult {
     GuiConnectionCloseResult {
         flow_id: string_at(value, &["flow_id", "flowId"]).unwrap_or(flow_id),
         closed: bool_at(value, &["closed"]).unwrap_or(true),
@@ -317,7 +318,7 @@ pub(crate) fn parse_connection_close(value: &Value, flow_id: String) -> GuiConne
     }
 }
 
-pub(crate) fn parse_feature_runtime_status(
+pub fn parse_feature_runtime_status(
     key: &str,
     value: &Value,
     fallback: Option<&GuiFeatureStatus>,
@@ -366,7 +367,7 @@ pub(crate) fn parse_feature_runtime_status(
 /// The parser is tolerant — missing fields default to empty; unknown keys
 /// are ignored. This lets the kernel evolve the response format without
 /// breaking older GUI builds.
-pub(crate) fn parse_plan_apply_result(value: &Value) -> GuiConfigPlanApplyResult {
+pub fn parse_plan_apply_result(value: &Value) -> GuiConfigPlanApplyResult {
     let result = nested_value(value, &["result"]).unwrap_or(value);
 
     GuiConfigPlanApplyResult {
@@ -400,11 +401,11 @@ fn parse_impact_items(value: &Value, key: &str) -> Vec<GuiConfigImpactItem> {
 
 // ── Utility functions ───────────────────────────────────────────────
 
-pub(crate) fn nested_value<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+pub fn nested_value<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
     path.iter().try_fold(value, |value, key| value.get(*key))
 }
 
-pub(crate) fn string_at(value: &Value, keys: &[&str]) -> Option<String> {
+pub fn string_at(value: &Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
         value.get(*key).and_then(|value| match value {
             Value::String(value) => Some(value.clone()),
@@ -415,7 +416,7 @@ pub(crate) fn string_at(value: &Value, keys: &[&str]) -> Option<String> {
     })
 }
 
-pub(crate) fn string_array_at(value: &Value, keys: &[&str]) -> Vec<String> {
+pub fn string_array_at(value: &Value, keys: &[&str]) -> Vec<String> {
     keys.iter()
         .find_map(|key| value.get(*key).and_then(Value::as_array))
         .map(|items| {
@@ -427,7 +428,7 @@ pub(crate) fn string_array_at(value: &Value, keys: &[&str]) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub(crate) fn u64_at(value: &Value, keys: &[&str]) -> Option<u64> {
+pub fn u64_at(value: &Value, keys: &[&str]) -> Option<u64> {
     keys.iter().find_map(|key| {
         value.get(*key).and_then(|value| {
             value
@@ -438,7 +439,7 @@ pub(crate) fn u64_at(value: &Value, keys: &[&str]) -> Option<u64> {
     })
 }
 
-pub(crate) fn bool_at(value: &Value, keys: &[&str]) -> Option<bool> {
+pub fn bool_at(value: &Value, keys: &[&str]) -> Option<bool> {
     keys.iter().find_map(|key| {
         value.get(*key).and_then(|value| {
             value.as_bool().or_else(|| {
@@ -455,11 +456,11 @@ pub(crate) fn bool_at(value: &Value, keys: &[&str]) -> Option<bool> {
 }
 
 /// Strip leading 'v' from version strings so all comparisons are prefix-free.
-pub(crate) fn normalize_version(version: Option<String>) -> Option<String> {
+pub fn normalize_version(version: Option<String>) -> Option<String> {
     version.map(|v| v.strip_prefix('v').unwrap_or(&v).to_string())
 }
 
-pub(crate) fn normalize_non_empty(value: String, field: &'static str) -> AppResult<String> {
+pub fn normalize_non_empty(value: String, field: &'static str) -> AppResult<String> {
     let value = value.trim().to_string();
     if value.is_empty() {
         return Err(AppError::invalid_argument(format!(
@@ -469,14 +470,14 @@ pub(crate) fn normalize_non_empty(value: String, field: &'static str) -> AppResu
     Ok(value)
 }
 
-pub(crate) fn normalize_optional(value: Option<String>) -> Option<String> {
+pub fn normalize_optional(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
         let value = value.trim().to_string();
         (!value.is_empty()).then_some(value)
     })
 }
 
-pub(crate) fn values_from_container(value: &Value, keys: &[&str]) -> Vec<Value> {
+pub fn values_from_container(value: &Value, keys: &[&str]) -> Vec<Value> {
     if let Some(array) = value.as_array() {
         return array.clone();
     }
@@ -540,3 +541,4 @@ fn protocol_array_at(value: &Value, key: &str) -> Vec<GuiProtocolCapability> {
         })
         .unwrap_or_default()
 }
+

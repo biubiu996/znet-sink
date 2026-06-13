@@ -25,11 +25,9 @@ pub fn proxy_nodes_from_config(config_content: &Value) -> Vec<ConfigProxyNode> {
         .iter()
         .filter_map(|node| {
             let tag = node.get("tag").and_then(|v| v.as_str())?;
-            let protocol = node
-                .get("type")
-                .or_else(|| node.get("protocol"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
+            // Zero outbound format: {"tag":"...", "protocol":{"type":"shadowsocks", ...}}
+            // Also support flat format: {"tag":"...", "type":"shadowsocks"}
+            let protocol = resolve_outbound_protocol(node);
             Some(ConfigProxyNode {
                 tag: tag.to_string(),
                 protocol: protocol.to_string(),
@@ -37,6 +35,22 @@ pub fn proxy_nodes_from_config(config_content: &Value) -> Vec<ConfigProxyNode> {
             })
         })
         .collect()
+}
+
+/// Resolve the protocol name from an outbound definition.
+///
+/// Zero uses `{"protocol": {"type": "shadowsocks", ...}}` (nested object).
+/// Also handles the flat format `{"type": "shadowsocks"}` and the
+/// string shorthand `{"protocol": "shadowsocks"}`.
+fn resolve_outbound_protocol(node: &Value) -> &str {
+    // Nested: node.protocol.type
+    node.get("protocol")
+        .and_then(|p| p.get("type").and_then(|v| v.as_str()))
+        // Flat: node.type
+        .or_else(|| node.get("type").and_then(|v| v.as_str()))
+        // String: node.protocol (as bare string)
+        .or_else(|| node.get("protocol").and_then(|v| v.as_str()))
+        .unwrap_or("unknown")
 }
 
 /// Extract policy groups from the active proxy config file content.
@@ -70,11 +84,11 @@ fn parse_config_policy_group(
     let members = parse_config_policy_members(&value, selected.as_deref(), outbound_kinds);
 
     Some(GuiPolicyGroup {
-        tag,
+        name: tag,
         kind: string_at(&value, &["type", "kind", "policy_kind", "policyKind"])
             .unwrap_or_else(|| "selector".to_string()),
         selected,
-        members,
+        outbounds: members,
         available: true,
         reason: None,
     })
@@ -127,15 +141,14 @@ fn parse_config_policy_member(
     })
 }
 
-fn outbound_kind_map(value: &Value) -> std::collections::HashMap<String, String> {
+pub fn outbound_kind_map(value: &Value) -> std::collections::HashMap<String, String> {
     values_from_container(value, &["outbounds", "nodes", "proxies"])
         .into_iter()
         .filter_map(|outbound| {
-            Some((
-                string_at(&outbound, &["tag", "name", "id"])?,
-                string_at(&outbound, &["type", "protocol", "kind"])
-                    .unwrap_or_else(|| "unknown".to_string()),
-            ))
+            let tag = string_at(&outbound, &["tag", "name", "id"])?;
+            let kind = resolve_outbound_protocol(&outbound).to_string();
+            Some((tag, kind))
         })
         .collect()
 }
+

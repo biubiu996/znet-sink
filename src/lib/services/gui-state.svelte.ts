@@ -16,6 +16,7 @@ import {
   getGuiCoreOverview,
   getGuiPolicyGroups,
   getConfigProxyNodes,
+  getConfigPolicyGroups,
 } from './core';
 import { error as toastError, success as toastSuccess } from './toast.svelte';
 import { coreEvents } from './core-events.svelte';
@@ -38,6 +39,7 @@ class GuiStateStore {
   policyGroups = $state<PolicyGroup[]>([]);
   tunStatus = $state<GuiFeatureStatus | null>(null);
   configNodes = $state<ConfigProxyNode[]>([]);
+  configPolicyGroups = $state<PolicyGroup[]>([]);
 
   isInitializing = $state(true); // true until first refreshAll completes
   isLoading = $state(false);
@@ -72,6 +74,7 @@ class GuiStateStore {
       this.refreshProxyMode(),
       this.refreshCoreOverview(),
       this.refreshConfigNodes(),
+      this.refreshConfigPolicyGroups(),
       this.refreshPolicyGroups(),
       this.refreshTunStatus(),
     ]);
@@ -123,10 +126,16 @@ class GuiStateStore {
   async refreshConfigNodes() {
     try {
       this.configNodes = await getConfigProxyNodes();
-      console.warn('[gui-state] config nodes loaded:', this.configNodes.length);
     } catch (e: any) {
-      console.warn('[gui-state] config nodes failed:', this.errorMessage(e));
       this.configNodes = [];
+    }
+  }
+
+  async refreshConfigPolicyGroups() {
+    try {
+      this.configPolicyGroups = await getConfigPolicyGroups();
+    } catch (e: any) {
+      this.configPolicyGroups = [];
     }
   }
 

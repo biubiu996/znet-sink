@@ -1,5 +1,5 @@
-use crate::models::gui_core::GuiTrafficStats;
-use crate::kernel::zero::adapter::*;
+use gui_lib::models::gui_core::GuiTrafficStats;
+use gui_lib::kernel::zero::adapter::{TrafficSample, build_traffic_snapshot, calculate_rates, bytes_delta_per_second};
 
 #[test]
 fn traffic_rates_use_byte_delta_over_interval() {
@@ -87,7 +87,7 @@ fn snapshot_with_short_interval_is_unstable() {
             ..GuiTrafficStats::default()
         },
         Some(&previous),
-        1_200, // 200ms interval, below 500ms threshold
+        1_200,
     );
 
     assert!(!snapshot.stable);

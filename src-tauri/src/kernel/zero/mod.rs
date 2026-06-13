@@ -21,8 +21,5 @@ pub mod events;
 pub mod parsing;
 pub mod queries;
 
-#[cfg(test)]
-mod tests;
-
 // Re-export the primary public API.
 pub use adapter::{TrafficSample, ZeroAdapter, build_traffic_snapshot, calculate_rates, bytes_delta_per_second};

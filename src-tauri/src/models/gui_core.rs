@@ -188,10 +188,10 @@ pub struct GuiProtocolCapability {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiPolicyGroup {
-    pub tag: String,
+    pub name: String,
     pub kind: String,
     pub selected: Option<String>,
-    pub members: Vec<GuiPolicyMember>,
+    pub outbounds: Vec<GuiPolicyMember>,
     pub available: bool,
     pub reason: Option<String>,
 }
@@ -200,6 +200,7 @@ pub struct GuiPolicyGroup {
 #[serde(rename_all = "camelCase")]
 pub struct GuiPolicyMember {
     pub tag: String,
+    #[serde(rename = "type")]
     pub kind: Option<String>,
     pub selected: bool,
     pub alive: Option<bool>,

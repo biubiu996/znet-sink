@@ -374,3 +374,4 @@ pub fn bytes_delta_per_second(previous: u64, current: u64, interval_ms: u64) -> 
     let rate = delta.saturating_mul(1000) / u128::from(interval_ms);
     rate.min(u128::from(u64::MAX)) as u64
 }
+

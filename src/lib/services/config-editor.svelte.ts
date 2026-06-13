@@ -8,6 +8,7 @@ import {
   getGuiZeroCapabilities,
 } from '$lib/services/core';
 import { success, warning } from '$lib/services/toast.svelte';
+import { guiState } from '$lib/services/gui-state.svelte';
 import type { ConfigPlanApplyResult, ConfigImpactItem } from '$lib/types/gui-api';
 
 // ── Types ──
@@ -349,6 +350,13 @@ class ConfigEditorService {
         this.dirty = false;
         this.phase = 'loaded';
       }
+
+      // Refresh config-derived GUI state (node list, policy sidebar) so the
+      // node page reflects the freshly applied configuration.
+      await Promise.allSettled([
+        guiState.refreshConfigNodes(),
+        guiState.refreshConfigPolicyGroups(),
+      ]);
     } catch {
       // Reconciliation is best-effort; don't change phase
     }

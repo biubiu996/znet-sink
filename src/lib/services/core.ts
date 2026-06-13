@@ -296,6 +296,11 @@ export async function getConfigProxyNodes(): Promise<ConfigProxyNode[]> {
   return invoke<ConfigProxyNode[]>('gui_proxy_nodes');
 }
 
+export async function getConfigPolicyGroups(): Promise<PolicyGroup[]> {
+  const raw = await invoke<Record<string, unknown>[]>('gui_config_policy_groups');
+  return mapPolicyGroups(raw);
+}
+
 export async function getGuiPolicyGroups(): Promise<PolicyGroup[]> {
   const raw = await invoke<Record<string, unknown>[]>('gui_policy_groups');
   return mapPolicyGroups(raw);

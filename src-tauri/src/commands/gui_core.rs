@@ -11,7 +11,7 @@ use crate::models::gui_core::{
     GuiPolicyGroup, GuiPolicySelectionResult, GuiTrafficSnapshot,
     GuiTrafficStats, GuiZeroCapabilities,
 };
-use crate::services::{core_config, core_process, interaction_mode, probe};
+use crate::services::{core_config, core_process, interaction_mode, probe, proxy_config};
 use crate::services::common;
 use crate::state::app_state::AppState;
 
@@ -98,15 +98,33 @@ pub async fn gui_policy_groups(state: State<'_, AppState>) -> AppResult<Vec<GuiP
     let adapter = ZeroAdapter::new();
     let opts = default_opts(state.inner());
 
+    // Always extract the protocol map from config so we can enrich
+    // kernel runtime data with protocol types the kernel doesn't return.
+    let active_content = common::lock(state.proxy_configs(), "proxy_config")?
+        .iter()
+        .find(|p| p.active)
+        .and_then(|p| p.content.clone());
+    let kind_map = active_content
+        .as_ref()
+        .map(|c| zero::config::outbound_kind_map(c))
+        .unwrap_or_default();
+
     match adapter.policy_groups(opts).await {
-        Ok(groups) if !groups.is_empty() => Ok(groups),
+        Ok(mut groups) if !groups.is_empty() => {
+            // Layer config-sourced protocol types onto kernel runtime data.
+            for group in &mut groups {
+                for member in &mut group.outbounds {
+                    if member.kind.is_none() || member.kind.as_deref() == Some("unknown") {
+                        member.kind = kind_map.get(&member.tag).cloned();
+                    }
+                }
+            }
+            Ok(groups)
+        }
         Ok(_) | Err(_) => {
             // Fallback: extract from static config
-            let active = common::lock(state.proxy_configs(), "proxy_config")?
-                .iter()
-                .find(|p| p.active)
-                .cloned();
-            let config_content = active.and_then(|p| p.content).unwrap_or(serde_json::json!({}));
+            let config_content =
+                active_content.unwrap_or(serde_json::json!({}));
             adapter.policy_groups_from_config(&config_content)
         }
     }
@@ -247,6 +265,29 @@ pub fn gui_proxy_nodes(state: State<'_, AppState>) -> AppResult<Vec<ConfigProxyN
     adapter.proxy_nodes_from_config(content)
 }
 
+/// Return policy groups directly from the active proxy config file.
+/// Does NOT require the core to be running — this is static config data.
+/// The frontend uses this as the skeleton for the node page sidebar,
+/// with kernel runtime state (selected, delay, alive) layered on top.
+#[tauri::command]
+pub fn gui_config_policy_groups(state: State<'_, AppState>) -> AppResult<Vec<GuiPolicyGroup>> {
+    let active = common::lock(state.proxy_configs(), "proxy_config")?
+        .iter()
+        .find(|p| p.active)
+        .cloned();
+
+    let Some(active) = active else {
+        return Ok(Vec::new());
+    };
+
+    let Some(content) = &active.content else {
+        return Ok(Vec::new());
+    };
+
+    let adapter = ZeroAdapter::new();
+    adapter.policy_groups_from_config(content)
+}
+
 /// Probe a single node. Returns the result directly.
 /// No upfront health check — if core is unavailable the probe returns an error result.
 #[tauri::command]
@@ -291,7 +332,12 @@ pub async fn gui_apply_config(
 ) -> AppResult<serde_json::Value> {
     interaction_mode::require_pro_mode(state.inner(), "apply_config")?;
     let opts = default_opts(state.inner());
-    ZeroAdapter::new().apply_config(config, opts).await
+    let result = ZeroAdapter::new().apply_config(config.clone(), opts).await?;
+    // The kernel accepted the config — mirror it into the active profile so
+    // that config-derived views (proxy nodes, policy groups) and the next
+    // core-process start reflect the live configuration.
+    let _ = proxy_config::update_active_content(state.inner(), config);
+    Ok(result)
 }
 
 /// Validate a config without applying it.
