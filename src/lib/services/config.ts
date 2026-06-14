@@ -5,11 +5,17 @@ import type {
   ProxyConfigImport,
   SubscriptionProfile,
   SubscriptionUpsert,
+  SubscriptionSyncAllOutcome,
   RuleSetProfile,
   RuleSetUpsert,
 } from '$lib/types/domain';
 
-export type { ProxyConfigProfile, SubscriptionProfile, RuleSetProfile };
+export type {
+  ProxyConfigProfile,
+  SubscriptionProfile,
+  SubscriptionSyncAllOutcome,
+  RuleSetProfile,
+};
 
 // ── Proxy configs ──
 
@@ -53,6 +59,10 @@ export async function upsertSubscription(input: SubscriptionUpsert): Promise<Sub
 
 export async function syncSubscription(id: string): Promise<SubscriptionProfile> {
   return invoke('subscription_sync', { id });
+}
+
+export async function syncAllSubscriptions(): Promise<SubscriptionSyncAllOutcome> {
+  return invoke('subscription_sync_all');
 }
 
 export async function removeSubscription(id: string): Promise<void> {

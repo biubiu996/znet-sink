@@ -229,6 +229,7 @@ pub fn run() {
             subscription_commands::subscription_get,
             subscription_commands::subscription_upsert,
             subscription_commands::subscription_sync,
+            subscription_commands::subscription_sync_all,
             subscription_commands::subscription_remove,
             rule_set_commands::rule_set_list,
             rule_set_commands::rule_set_get,
@@ -433,6 +434,12 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Spawn the subscription auto-sync scheduler. It re-syncs
+            // any enabled subscription that has an update interval once
+            // that interval elapses. The first pass is delayed to let
+            // the kernel and network come up.
+            crate::services::subscription::spawn_auto_sync_scheduler(app.handle().clone());
 
             Ok(())
         })

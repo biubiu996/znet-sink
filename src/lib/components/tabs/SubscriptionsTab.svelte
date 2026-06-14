@@ -1,18 +1,67 @@
 <script lang="ts">
-  import { store } from '$lib/services/store.svelte';
   import { handleAppError } from '$lib/services/core';
-  import { listSubscriptions, syncSubscription, removeSubscription, upsertSubscription } from '$lib/services/config';
+  import {
+    listSubscriptions,
+    syncSubscription,
+    removeSubscription,
+    upsertSubscription,
+    listProxyConfigs,
+  } from '$lib/services/config';
+  import * as toast from '$lib/services/toast.svelte';
   import DraggableModal from '$lib/components/DraggableModal.svelte';
-  import type { SubscriptionProfile, SubscriptionUpsert } from '$lib/types/domain';
+  import type {
+    SubscriptionProfile,
+    SubscriptionUpsert,
+    ProxyConfigProfile,
+  } from '$lib/types/domain';
+
+  // Format presets exposed in the form. Values map to the Rust
+  // `parse_subscription_content` format string.
+  const FORMAT_OPTIONS = [
+    { value: 'auto', label: '自动检测' },
+    { value: 'zero-json', label: 'Zero JSON' },
+    { value: 'zero-base64-json', label: 'Zero Base64 JSON' },
+    { value: 'clash-yaml', label: 'Clash YAML' },
+    { value: 'clash-base64-yaml', label: 'Clash Base64 YAML' },
+  ];
+
+  // Auto-sync interval presets (seconds). `0` means manual only.
+  const INTERVAL_OPTIONS: Array<{ value: number; label: string }> = [
+    { value: 0, label: '手动' },
+    { value: 1800, label: '30 分钟' },
+    { value: 3600, label: '1 小时' },
+    { value: 21600, label: '6 小时' },
+    { value: 43200, label: '12 小时' },
+    { value: 86400, label: '24 小时' },
+  ];
+
+  const KERNEL_OPTIONS = [
+    { value: 'zero', label: 'Zero' },
+  ];
+
+  type FormState = {
+    name: string;
+    url: string;
+    format: string;
+    kernel: string;
+    updateIntervalSecs: number;
+    userAgent: string;
+    targetProxyConfigId: string;
+    enabled: boolean;
+  };
 
   let subscriptions = $state<SubscriptionProfile[]>([]);
+  let proxyConfigs = $state<ProxyConfigProfile[]>([]);
   let loading = $state(true);
   let syncingId = $state<string | null>(null);
   let syncingAll = $state<{ done: number; total: number } | null>(null);
+  let togglingId = $state<string | null>(null);
   let showForm = $state(false);
   let saving = $state(false);
   let editingId = $state<string | null>(null);
   let searchQuery = $state('');
+
+  let form = $state<FormState>(emptyForm());
 
   const filtered = $derived(
     searchQuery.trim()
@@ -23,14 +72,30 @@
       : subscriptions
   );
 
-  let form = $state({ name: '', url: '', format: 'auto' });
+  function emptyForm(): FormState {
+    return {
+      name: '',
+      url: '',
+      format: 'auto',
+      kernel: 'zero',
+      updateIntervalSecs: 0,
+      userAgent: '',
+      targetProxyConfigId: '',
+      enabled: true,
+    };
+  }
 
   async function refresh() {
     loading = true;
     try {
-      subscriptions = await listSubscriptions();
+      const [subs, configs] = await Promise.all([
+        listSubscriptions(),
+        listProxyConfigs().catch(() => [] as ProxyConfigProfile[]),
+      ]);
+      subscriptions = subs;
+      proxyConfigs = configs;
     } catch (e) {
-      console.error('Failed to load subscriptions:', e);
+      handleAppError(e, '加载订阅列表失败');
     } finally {
       loading = false;
     }
@@ -41,6 +106,7 @@
     try {
       await syncSubscription(id);
       await refresh();
+      toast.success('订阅同步完成');
     } catch (e) {
       handleAppError(e, '同步订阅失败');
     } finally {
@@ -51,29 +117,64 @@
   async function handleSyncAll() {
     const list = subscriptions;
     if (list.length === 0 || syncingAll) return;
-    syncingAll = { done: 0, total: list.length };
+    const eligible = list.filter(s => s.enabled);
+    if (eligible.length === 0) {
+      toast.warning('没有已启用的订阅可同步');
+      return;
+    }
+    syncingAll = { done: 0, total: eligible.length };
+    let succeeded = 0;
     try {
-      for (const sub of list) {
+      for (const sub of eligible) {
         try {
           await syncSubscription(sub.id);
+          succeeded++;
         } catch {
           // individual failure doesn't stop the batch
         }
         syncingAll.done++;
       }
       await refresh();
-    } catch {
-      // batch-level failure
+      if (succeeded === eligible.length) {
+        toast.success(`全部同步完成 (${succeeded}/${eligible.length})`);
+      } else {
+        toast.warning(`同步完成：成功 ${succeeded}/${eligible.length}`);
+      }
     } finally {
       syncingAll = null;
     }
   }
 
+  async function handleToggleEnabled(sub: SubscriptionProfile) {
+    togglingId = sub.id;
+    try {
+      // Send the full editable payload so the backend upsert (which
+      // replaces editable fields) preserves interval/UA/format/etc.
+      await upsertSubscription({
+        id: sub.id,
+        name: sub.name,
+        url: sub.url,
+        enabled: !sub.enabled,
+        format: canonicalFormat(sub.format),
+        kernel: sub.kernel || 'zero',
+        updateIntervalSecs: sub.updateIntervalSecs,
+        userAgent: sub.userAgent,
+        targetProxyConfigId: sub.targetProxyConfigId,
+      });
+      await refresh();
+    } catch (e) {
+      handleAppError(e, '切换启用状态失败');
+    } finally {
+      togglingId = null;
+    }
+  }
+
   async function handleRemove(id: string) {
-    if (!confirm('确认删除此订阅？')) return;
+    if (!confirm('确认删除此订阅？关联的代理配置不会被删除。')) return;
     try {
       await removeSubscription(id);
       await refresh();
+      toast.success('订阅已删除');
     } catch (e) {
       handleAppError(e, '删除订阅失败');
     }
@@ -81,13 +182,22 @@
 
   function openCreate() {
     editingId = null;
-    form = { name: '', url: '', format: 'auto' };
+    form = emptyForm();
     showForm = true;
   }
 
   function openEdit(sub: SubscriptionProfile) {
     editingId = sub.id;
-    form = { name: sub.name, url: sub.url, format: sub.format };
+    form = {
+      name: sub.name,
+      url: sub.url,
+      format: canonicalFormat(sub.format),
+      kernel: sub.kernel || 'zero',
+      updateIntervalSecs: sub.updateIntervalSecs ?? 0,
+      userAgent: sub.userAgent ?? '',
+      targetProxyConfigId: sub.targetProxyConfigId ?? '',
+      enabled: sub.enabled,
+    };
     showForm = true;
   }
 
@@ -100,11 +210,17 @@
         name: form.name.trim(),
         url: form.url.trim(),
         format: form.format || undefined,
+        kernel: form.kernel || undefined,
+        updateIntervalSecs: form.updateIntervalSecs || undefined,
+        userAgent: form.userAgent.trim() || undefined,
+        targetProxyConfigId: form.targetProxyConfigId || undefined,
+        enabled: form.enabled,
       };
 
       await upsertSubscription(input);
       showForm = false;
       await refresh();
+      toast.success(editingId ? '订阅已更新' : '订阅已创建');
     } catch (e) {
       handleAppError(e, '保存订阅失败');
     } finally {
@@ -112,9 +228,65 @@
     }
   }
 
+  // ── Formatting helpers ──
+
   function formatTime(ms?: number): string {
-    if (!ms) return '—';
-    return new Date(ms).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    if (!ms) return '从未同步';
+    return new Date(ms).toLocaleString('zh-CN', {
+      month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+  }
+
+  function formatExpiry(ms?: number): string {
+    if (!ms) return '';
+    const date = new Date(ms);
+    return date.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  }
+
+  function daysUntil(ms?: number): number | null {
+    if (!ms) return null;
+    const diff = ms - Date.now();
+    return Math.ceil(diff / 86_400_000);
+  }
+
+  function formatBytes(bytes?: number): string {
+    if (bytes === undefined || bytes === null) return '—';
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let value = bytes / 1024;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit++;
+    }
+    return `${value.toFixed(1)} ${units[unit]}`;
+  }
+
+  function usedBytes(sub: SubscriptionProfile): number {
+    return (sub.uploadBytes ?? 0) + (sub.downloadBytes ?? 0);
+  }
+
+  function usagePercent(sub: SubscriptionProfile): number | null {
+    if (!sub.totalBytes) return null;
+    return Math.min(100, (usedBytes(sub) / sub.totalBytes) * 100);
+  }
+
+  function formatLabel(value: string): string {
+    const found = FORMAT_OPTIONS.find(o => o.value === value);
+    return found?.label ?? value;
+  }
+
+  /** Map a stored format string back to a selectable source-format
+   *  value so the form and toggle payloads stay consistent. */
+  function canonicalFormat(value: string): string {
+    if (value === 'clash-yaml-converted') return 'clash-yaml';
+    if (value === 'clash-base64-yaml-converted') return 'clash-base64-yaml';
+    return value || 'auto';
+  }
+
+  function proxyConfigName(id?: string): string {
+    if (!id) return '自动创建';
+    return proxyConfigs.find(c => c.id === id)?.name ?? '自动创建';
   }
 
   $effect(() => {
@@ -125,7 +297,10 @@
 <div class="desk-card flex-1 overflow-hidden flex flex-col animate-fade-in">
   <!-- Panel header -->
   <div class="panel-header">
-    <span class="panel-title">订阅管理</span>
+    <div class="panel-title-group">
+      <span class="panel-title">订阅管理</span>
+      <span class="panel-subtitle">订阅链接会自动转换为 Zero 内核配置并关联代理配置</span>
+    </div>
     <div class="flex items-center gap-2">
       {#if subscriptions.length > 0}
         <input
@@ -153,11 +328,11 @@
           {/if}
         </button>
       {/if}
-      <button class="action-btn" onclick={openCreate}>
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-        <line x1="6" y1="1" x2="6" y2="11"/><line x1="1" y1="6" x2="11" y2="6"/>
-      </svg>
-      新增
+      <button class="action-btn primary" onclick={openCreate}>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <line x1="6" y1="1" x2="6" y2="11"/><line x1="1" y1="6" x2="11" y2="6"/>
+        </svg>
+        新增
       </button>
     </div>
   </div>
@@ -166,36 +341,100 @@
   {#if loading}
     <div class="panel-empty">加载中...</div>
   {:else if subscriptions.length === 0 && !showForm}
-    <div class="panel-empty">暂无订阅，点击新增添加</div>
+    <div class="panel-empty">
+      <div class="empty-stack">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="empty-icon">
+          <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+          <path d="M12 7v5l3 3"/>
+        </svg>
+        <span>暂无订阅</span>
+        <span class="empty-hint">添加订阅链接以自动获取节点配置</span>
+      </div>
+    </div>
   {:else}
     <div class="list-scroll">
       {#if filtered.length === 0 && searchQuery}
         <div class="panel-empty">无匹配结果</div>
       {/if}
       {#each filtered as sub (sub.id)}
-        <div
-          role="button"
-          tabindex="0"
-          onclick={() => openEdit(sub)}
-          onkeydown={(e) => e.key === 'Enter' && openEdit(sub)}
-          class="list-row"
-        >
+        <div class="list-row" class:disabled={!sub.enabled}>
           <div class="row-main">
             <div class="row-top">
+              <button
+                class="enable-toggle"
+                class:active={sub.enabled}
+                title={sub.enabled ? '已启用' : '已禁用'}
+                onclick={(e: MouseEvent) => { e.stopPropagation(); handleToggleEnabled(sub); }}
+                disabled={togglingId === sub.id}
+                aria-label={sub.enabled ? '禁用' : '启用'}
+              >
+                <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  {#if sub.enabled}
+                    <circle cx="6" cy="6" r="5"/><circle cx="6" cy="6" r="2" fill="currentColor"/>
+                  {:else}
+                    <circle cx="6" cy="6" r="5"/>
+                  {/if}
+                </svg>
+              </button>
+
               <span class="row-name">{sub.name}</span>
+
               {#if sub.lastError}
                 <span class="row-tag error-tag">同步失败</span>
-              {:else}
+              {:else if !sub.enabled}
+                <span class="row-tag muted-tag">已禁用</span>
+              {:else if sub.lastSyncAtUnixMs}
                 <span class="row-tag ok-tag">正常</span>
+              {:else}
+                <span class="row-tag muted-tag">未同步</span>
+              {/if}
+
+              {#if sub.nodeCount !== undefined}
+                <span class="row-tag info-tag">{sub.nodeCount} 节点</span>
+              {/if}
+              <span class="row-tag outline-tag">{formatLabel(sub.format)}</span>
+              {#if sub.updateIntervalSecs}
+                <span class="row-tag outline-tag" title="自动同步间隔">⏱ 自动</span>
               {/if}
             </div>
+
             <div class="row-meta">
-              <span class="font-mono row-url">{sub.url}</span>
-              <span class="row-sep">·</span>
-              <span>{formatTime(sub.lastSyncAtUnixMs)}</span>
+              <span class="font-mono row-url" title={sub.url}>{sub.url}</span>
             </div>
+
+            <div class="row-meta-line">
+              <span>同步: {formatTime(sub.lastSyncAtUnixMs)}</span>
+              <span class="row-sep">·</span>
+              <span>配置: {proxyConfigName(sub.targetProxyConfigId)}</span>
+              {#if sub.expireAtUnixMs}
+                <span class="row-sep">·</span>
+                <span class:expire-warn={daysUntil(sub.expireAtUnixMs) !== null && daysUntil(sub.expireAtUnixMs)! < 7}>
+                  到期: {formatExpiry(sub.expireAtUnixMs)}
+                  {#if daysUntil(sub.expireAtUnixMs) !== null}
+                    <span class="expire-days">(剩 {daysUntil(sub.expireAtUnixMs)} 天)</span>
+                  {/if}
+                </span>
+              {/if}
+            </div>
+
+            {#if sub.totalBytes}
+              <div class="traffic-bar-wrap">
+                <div class="traffic-bar-track">
+                  <div
+                    class="traffic-bar-fill"
+                    class:warn={usagePercent(sub) !== null && usagePercent(sub)! >= 90}
+                    style="width: {usagePercent(sub)}%"
+                  ></div>
+                </div>
+                <span class="traffic-label">
+                  {formatBytes(usedBytes(sub))} / {formatBytes(sub.totalBytes)}
+                  (↑{formatBytes(sub.uploadBytes)} ↓{formatBytes(sub.downloadBytes)})
+                </span>
+              </div>
+            {/if}
+
             {#if sub.lastError}
-              <span class="row-error">{sub.lastError}</span>
+              <span class="row-error" title={sub.lastError}>{sub.lastError}</span>
             {/if}
           </div>
 
@@ -204,8 +443,9 @@
             <button
               class="row-action sync-btn"
               onclick={(e: MouseEvent) => { e.stopPropagation(); handleSync(sub.id); }}
-              disabled={syncingId === sub.id}
+              disabled={syncingId === sub.id || !sub.enabled}
               title="同步订阅"
+              aria-label="同步订阅"
             >
               <svg
                 width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor"
@@ -216,12 +456,23 @@
               </svg>
             </button>
             <button
+              class="row-action edit-btn"
+              onclick={(e: MouseEvent) => { e.stopPropagation(); openEdit(sub); }}
+              title="编辑订阅"
+              aria-label="编辑订阅"
+            >
+              <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8.5 1.5l2 2L4 10H2V8z"/>
+              </svg>
+            </button>
+            <button
               class="row-action del-btn"
               onclick={(e: MouseEvent) => { e.stopPropagation(); handleRemove(sub.id); }}
               title="删除订阅"
+              aria-label="删除订阅"
             >
               <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
-                <line x1="2" y1="2" x2="10" y2="10"/><line x1="10" y1="2" x2="2" y2="10"/>
+                <path d="M2 3h8M4.5 3V2h3v1M3 3l.5 7h5L9 3"/>
               </svg>
             </button>
           </div>
@@ -236,30 +487,94 @@
   title="{editingId ? '编辑' : '新增'}订阅"
   open={showForm}
   onClose={() => showForm = false}
-  width="min(440px, 90vw)"
+  width="min(500px, 92vw)"
 >
     <div class="form-item">
       <span class="form-label">名称 <span class="required">*</span></span>
       <div class="form-input-wrap">
-        <input id="sub-name" bind:value={form.name} placeholder="例如: 官方订阅" class="field-input" />
+        <input bind:value={form.name} placeholder="例如: 官方订阅" class="field-input" />
       </div>
     </div>
 
     <div class="form-item">
       <span class="form-label">订阅 URL <span class="required">*</span></span>
       <div class="form-input-wrap">
-        <input id="sub-url" bind:value={form.url} placeholder="https://example.com/subscription" class="field-input field-mono" />
+        <input bind:value={form.url} placeholder="https://example.com/subscription" class="field-input field-mono" />
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-item">
+        <span class="form-label">源格式</span>
+        <div class="form-input-wrap">
+          <select bind:value={form.format} class="field-input">
+            {#each FORMAT_OPTIONS as opt}
+              <option value={opt.value}>{opt.label}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+
+      <div class="form-item">
+        <span class="form-label">目标内核</span>
+        <div class="form-input-wrap">
+          <select bind:value={form.kernel} class="field-input" disabled>
+            {#each KERNEL_OPTIONS as opt}
+              <option value={opt.value}>{opt.label}</option>
+            {/each}
+          </select>
+          <span class="form-hint">GUI 仅管理 Zero 内核，订阅会转换为 Zero 配置</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-item">
+        <span class="form-label">自动同步</span>
+        <div class="form-input-wrap">
+          <select bind:value={form.updateIntervalSecs} class="field-input">
+            {#each INTERVAL_OPTIONS as opt}
+              <option value={opt.value}>{opt.label}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+
+      <div class="form-item">
+        <span class="form-label">启用</span>
+        <div class="form-input-wrap toggle-row">
+          <span class="toggle-copy">{form.enabled ? '参与同步' : '暂停同步'}</span>
+          <button
+            type="button"
+            class="switch-mini"
+            class:active={form.enabled}
+            onclick={() => form.enabled = !form.enabled}
+            aria-label="启用订阅"
+          >
+            <span class="switch-knob"></span>
+          </button>
+        </div>
       </div>
     </div>
 
     <div class="form-item">
-      <span class="form-label">格式</span>
+      <span class="form-label">关联配置</span>
       <div class="form-input-wrap">
-        <select id="sub-format" bind:value={form.format} class="field-input">
-          <option value="auto">自动检测</option>
-          <option value="clash-yaml">Clash YAML</option>
-          <option value="zero-base64-json">Zero Base64 JSON</option>
+        <select bind:value={form.targetProxyConfigId} class="field-input">
+          <option value="">自动创建</option>
+          {#each proxyConfigs as cfg}
+            <option value={cfg.id}>{cfg.name} ({cfg.id})</option>
+          {/each}
         </select>
+        <span class="form-hint">同步时写入关联的代理配置；留空则自动新建一份</span>
+      </div>
+    </div>
+
+    <div class="form-item">
+      <span class="form-label">User-Agent</span>
+      <div class="form-input-wrap">
+        <input bind:value={form.userAgent} placeholder="留空使用默认 UA" class="field-input field-mono" />
+        <span class="form-hint">部分机场需要特定 UA 才能返回节点</span>
       </div>
     </div>
 
@@ -279,6 +594,14 @@
     padding: 11px 14px 10px;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
+    gap: 12px;
+  }
+
+  .panel-title-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
   }
 
   .panel-title {
@@ -286,6 +609,12 @@
     font-weight: 600;
     color: var(--foreground);
     letter-spacing: -0.01em;
+  }
+
+  .panel-subtitle {
+    font-size: 10.5px;
+    color: var(--muted-foreground);
+    opacity: 0.8;
   }
 
   .search-input {
@@ -315,6 +644,22 @@
     color: var(--muted-foreground);
   }
 
+  .empty-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .empty-icon {
+    opacity: 0.3;
+  }
+
+  .empty-hint {
+    font-size: 11px;
+    opacity: 0.7;
+  }
+
   .action-btn {
     display: inline-flex;
     align-items: center;
@@ -331,6 +676,15 @@
   }
 
   .action-btn:hover { background: var(--surface); }
+  .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .action-btn.primary {
+    background: var(--primary);
+    color: var(--primary-foreground);
+    border-color: transparent;
+  }
+
+  .action-btn.primary:hover { opacity: 0.9; }
 
   .list-scroll {
     flex: 1;
@@ -344,12 +698,11 @@
 
   .list-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 8px;
-    padding: 9px 11px;
+    padding: 10px 11px;
     border-radius: 8px;
     border: 1px solid transparent;
-    cursor: pointer;
     transition: background 0.12s ease, border-color 0.12s ease;
   }
 
@@ -358,71 +711,151 @@
     border-color: var(--border);
   }
 
+  .list-row.disabled .row-name {
+    opacity: 0.55;
+  }
+
   .row-main {
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
   }
 
   .row-top {
     display: flex;
     align-items: center;
     gap: 6px;
+    flex-wrap: wrap;
   }
 
+  .enable-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--muted-foreground);
+    flex-shrink: 0;
+    transition: color 0.12s ease;
+  }
+
+  .enable-toggle.active { color: var(--success); }
+  .enable-toggle:hover { background: var(--surface); }
+  .enable-toggle:disabled { opacity: 0.4; cursor: not-allowed; }
+
   .row-name {
-    font-size: 12px;
-    font-weight: 500;
+    font-size: 12.5px;
+    font-weight: 600;
     color: var(--foreground);
   }
 
   .row-tag {
     font-size: 10px;
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
     padding: 2px 6px;
     border-radius: 4px;
     background: var(--muted);
     color: var(--muted-foreground);
+    white-space: nowrap;
   }
 
   .row-tag.ok-tag {
-    background: rgba(34, 197, 94, 0.1);
+    background: rgba(34, 197, 94, 0.12);
     color: var(--success);
   }
 
   .row-tag.error-tag {
-    background: rgba(239, 68, 68, 0.1);
+    background: rgba(239, 68, 68, 0.12);
     color: var(--destructive);
   }
 
-  .row-meta {
+  .row-tag.muted-tag {
+    background: var(--muted);
+    color: var(--muted-foreground);
+    opacity: 0.7;
+  }
+
+  .row-tag.info-tag {
+    background: rgba(99, 102, 241, 0.12);
+    color: var(--primary);
+  }
+
+  .row-tag.outline-tag {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted-foreground);
+  }
+
+  .row-meta,
+  .row-meta-line {
     display: flex;
     align-items: center;
     gap: 5px;
-    font-size: 10px;
+    font-size: 10.5px;
     color: var(--muted-foreground);
-    opacity: 0.65;
-    overflow: hidden;
+    flex-wrap: wrap;
   }
+
+  .row-meta { opacity: 0.65; }
+  .row-meta-line { opacity: 0.85; }
 
   .row-url {
     font-family: var(--font-mono);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: min(320px, 100%);
+    max-width: min(420px, 100%);
   }
 
   .row-sep { opacity: 0.4; }
 
-  .row-error {
+  .expire-warn { color: var(--destructive); }
+  .expire-days { opacity: 0.7; margin-left: 2px; }
+
+  .traffic-bar-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+  }
+
+  .traffic-bar-track {
+    flex: 1;
+    height: 5px;
+    min-width: 60px;
+    max-width: 220px;
+    border-radius: 3px;
+    background: var(--muted);
+    overflow: hidden;
+  }
+
+  .traffic-bar-fill {
+    height: 100%;
+    background: var(--success);
+    border-radius: 3px;
+    transition: width 0.3s ease, background 0.2s ease;
+    min-width: 2px;
+  }
+
+  .traffic-bar-fill.warn { background: var(--destructive); }
+
+  .traffic-label {
     font-size: 10px;
+    color: var(--muted-foreground);
+    font-family: var(--font-mono);
+    white-space: nowrap;
+  }
+
+  .row-error {
+    font-size: 10.5px;
     color: var(--destructive);
-    opacity: 0.8;
+    opacity: 0.85;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -433,11 +866,12 @@
     align-items: center;
     gap: 2px;
     flex-shrink: 0;
-    opacity: 0;
+    opacity: 0.35;
     transition: opacity 0.12s ease;
   }
 
-  .list-row:hover .row-actions {
+  .list-row:hover .row-actions,
+  .list-row:focus-within .row-actions {
     opacity: 1;
   }
 
@@ -460,13 +894,18 @@
     color: var(--success);
   }
 
+  .row-action.edit-btn:hover {
+    background: rgba(99, 102, 241, 0.12);
+    color: var(--primary);
+  }
+
   .row-action.del-btn:hover {
     background: rgba(239, 68, 68, 0.1);
     color: var(--destructive);
   }
 
   .row-action:disabled {
-    opacity: 0.4;
+    opacity: 0.35;
     cursor: not-allowed;
   }
 
@@ -474,18 +913,23 @@
     animation: spin 0.8s linear infinite;
   }
 
-  /* Modal */
-  /* Form styles (layout provided by DraggableModal) */
-
+  /* Modal form styles */
   .form-item {
     display: flex;
     align-items: flex-start;
     gap: 12px;
   }
 
+  .form-row {
+    display: flex;
+    gap: 12px;
+  }
+
+  .form-row .form-item { flex: 1; }
+
   .form-label {
     flex-shrink: 0;
-    width: 80px;
+    width: 72px;
     padding-top: 7px;
     font-size: 12px;
     font-weight: 500;
@@ -496,9 +940,18 @@
   .form-input-wrap {
     flex: 1;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
   }
 
   .required { color: var(--destructive); }
+
+  .form-hint {
+    font-size: 10.5px;
+    color: var(--muted-foreground);
+    opacity: 0.75;
+  }
 
   .field-input {
     width: 100%;
@@ -514,6 +967,49 @@
 
   .field-input:focus { border-color: rgba(99, 102, 241, 0.4); }
   .field-mono { font-family: var(--font-mono); font-size: 12px; }
+
+  .toggle-row {
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .toggle-copy {
+    font-size: 11.5px;
+    color: var(--muted-foreground);
+  }
+
+  .switch-mini {
+    position: relative;
+    width: 34px;
+    height: 20px;
+    border-radius: 10px;
+    background: var(--muted);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s ease;
+    flex-shrink: 0;
+  }
+
+  .switch-mini.active {
+    background: var(--primary);
+    border-color: transparent;
+  }
+
+  .switch-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--background);
+    transition: transform 0.15s ease;
+  }
+
+  .switch-mini.active .switch-knob {
+    transform: translateX(14px);
+  }
 
   .btn-ghost {
     flex: 1;

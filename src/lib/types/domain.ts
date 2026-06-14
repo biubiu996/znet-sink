@@ -50,6 +50,18 @@ export interface SubscriptionProfile {
   kernel: string;
   format: string;
   targetProxyConfigId?: string;
+  /** Auto-sync interval in seconds. When set and enabled, the
+   * background scheduler re-syncs this subscription. */
+  updateIntervalSecs?: number;
+  /** Custom User-Agent used when fetching this subscription. */
+  userAgent?: string;
+  /** Number of proxy nodes detected during the last sync. */
+  nodeCount?: number;
+  uploadBytes?: number;
+  downloadBytes?: number;
+  totalBytes?: number;
+  /** Subscription expiry (ms since epoch). */
+  expireAtUnixMs?: number;
   updatedAtUnixMs: number;
   lastSyncAtUnixMs?: number;
   lastError?: string;
@@ -63,6 +75,14 @@ export interface SubscriptionUpsert {
   kernel?: string;
   format?: string;
   targetProxyConfigId?: string;
+  updateIntervalSecs?: number;
+  userAgent?: string;
+}
+
+export interface SubscriptionSyncAllOutcome {
+  total: number;
+  succeeded: number;
+  failed: number;
 }
 
 export interface RuleSetProfile {
