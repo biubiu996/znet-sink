@@ -1,10 +1,23 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { overviewData } from '$lib/services/overview-data.svelte';
   import { guiState } from '$lib/services/gui-state.svelte';
+  import { coreEvents } from '$lib/services/core-events.svelte';
   import { store } from '$lib/services/store.svelte';
   import { selectPolicy, guiClientProbeNode, guiClientProbeStart } from '$lib/services/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import type { ProxyNode } from '$lib/types/protocol';
+  import type { PolicyGroup } from '$lib/types/gui-api';
+  import {
+    parseNodeName,
+    getProtocolStyle,
+    gradeDelay,
+    formatDelay,
+    delayBarWidth,
+    getGroupKindStyle,
+    getNodeChips,
+  } from '$lib/services/node-utils';
+  import { delayHistory, type DelayEntry } from '$lib/services/delay-history.svelte';
 
   // ── View state ──
   type ViewMode = 'list' | 'grid';
@@ -13,146 +26,186 @@
   let searchQuery = $state('');
   let sortMode = $state<'delay' | 'name'>('delay');
   let selectedGroup = $state<string | null>(null);
+
+  // ── Action state ──
   let switching = $state<string | null>(null);
   let probing = $state<string | null>(null);
   let probingAll = $state(false);
   let probeProgress = $state({ done: 0, total: 0 });
   let lastError = $state<string | null>(null);
-  let probeResults = $state<Record<string, { delayMs?: number; alive?: boolean }>>({});
 
-  // ── Delay colors (Clash-style thresholds) ──
-  function getDelayStyle(delay: number): { color: string; bg: string; bar: string } {
-    if (delay <= 0) return { color: 'var(--muted-foreground)', bg: 'var(--muted)', bar: 'transparent' };
-    if (delay < 200) return { color: '#16A34A', bg: 'rgba(34,197,94,0.10)', bar: '#22C55E' };
-    if (delay < 500) return { color: '#D97706', bg: 'rgba(245,158,11,0.10)', bar: '#F59E0B' };
-    return { color: '#DC2626', bg: 'rgba(239,68,68,0.10)', bar: '#EF4444' };
+  // ── Collapsible group sections (persisted to localStorage) ──
+  const COLLAPSE_KEY = 'znet-nodes-collapsed';
+  let collapsedGroups = $state<Set<string>>(loadCollapsed());
+
+  function loadCollapsed(): Set<string> {
+    try {
+      const raw = localStorage.getItem(COLLAPSE_KEY);
+      if (!raw) return new Set();
+      return new Set(JSON.parse(raw) as string[]);
+    } catch {
+      return new Set();
+    }
   }
 
-  function getDelayColor(delay: number): string {
-    if (delay <= 0) return 'var(--muted-foreground)';
-    if (delay < 200) return '#22C55E';
-    if (delay < 500) return '#FBBF24';
-    return '#F87171';
+  function toggleCollapse(name: string) {
+    const next = new Set(collapsedGroups);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    collapsedGroups = next;
+    try {
+      localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...next]));
+    } catch {
+      // best-effort persistence
+    }
   }
 
-  // ── Data derivation ──
-  // Sidebar groups: config skeleton first, runtime as fallback.
-  // Config groups have the structure (names, kinds, outbound list) but
-  // no runtime state.  We merge `selected` from runtime policyGroups
-  // when the kernel is connected.
-  const groups = $derived.by(() => {
+  // ── Kernel connection state ──
+  const isConnected = $derived(guiState.isConnected);
+
+  // ── On mount: re-fetch config-derived data so the node page always
+  //     reflects the current active profile. Also pull runtime policy
+  //     groups once in case the kernel is already connected. ──
+  onMount(() => {
+    void Promise.allSettled([
+      guiState.refreshConfigNodes(),
+      guiState.refreshConfigPolicyGroups(),
+      guiState.refreshPolicyGroups(),
+    ]);
+  });
+
+  // ── Kernel interaction: keep runtime overlay fresh while this tab is open.
+  //     CoreStatusCard normally drives refreshOnTick, but it only mounts in
+  //     Overview, so we mirror its tick watcher here. Also watch modeTick
+  //     so a rule/global switch re-syncs the node list immediately. ──
+  $effect(() => {
+    const tick = coreEvents.statusTick;
+    const modeTick = guiState.modeTick;
+    void modeTick; // re-run on mode change
+    if ((tick > 0 || modeTick > 0) && guiState.isConnected) {
+      void guiState.refreshPolicyGroups();
+    }
+  });
+
+  // ── Policy groups (config skeleton first, runtime overlays second) ──
+  const groups = $derived.by<PolicyGroup[]>(() => {
     const config = guiState.configPolicyGroups;
     const runtime = guiState.policyGroups;
 
-    // Build a lookup of selected tag per group from runtime data
+    // Merge selected tag from runtime onto config groups.
     const runtimeSelected = new Map<string, string | undefined>();
     for (const rg of runtime) {
       if (rg.selected) runtimeSelected.set(rg.name, rg.selected);
     }
 
     if (config.length > 0) {
-      return config.map(cg => ({
+      return config.map((cg) => ({
         ...cg,
         selected: runtimeSelected.get(cg.name) ?? cg.selected,
       }));
     }
-
     return runtime;
   });
 
-  // ── Primary node list: config file nodes (static skeleton) with
-  //     runtime status (selected, delay, alive) layered on top.
-  //     Uses $effect → $state instead of $derived.by to ensure
-  //     cross-module $state tracking (guiState.configNodes) is
-  //     properly detected across the async load boundary. ──
-  let allNodes = $state<ProxyNode[]>([]);
+  // ── Runtime overlay: tag → { delay, alive, selected, group } ──
+  interface RuntimeOverlay {
+    delayMs?: number;
+    alive?: boolean;
+    selected?: boolean;
+    groupName?: string;
+  }
 
-  $effect(() => {
-    // Touch all reactive sources at the top so Svelte tracks them
-    const cnodes = guiState.configNodes;
-    void groups; // ensure groups is tracked
-
-    // Build runtime overlay from policy groups (if kernel is connected)
-    const overlay = new Map<string, { selected: boolean; delayMs?: number; alive?: boolean; groupName: string; kind?: string }>();
+  const runtimeOverlay = $derived.by(() => {
+    const map = new Map<string, RuntimeOverlay>();
     for (const group of groups) {
       for (const ob of group.outbounds) {
-        overlay.set(ob.tag, {
-          selected: group.selected === ob.tag,
+        map.set(ob.tag, {
           delayMs: ob.delayMs,
           alive: ob.alive,
+          selected: group.selected === ob.tag,
           groupName: group.name,
-          kind: ob.type,
         });
       }
     }
-
-    // ── Path 1: config nodes from static config file (works without kernel) ──
-    if (cnodes.length > 0) {
-      allNodes = cnodes
-        .filter(cn => !cn.isSelector)
-        .map(cn => {
-          const rt = overlay.get(cn.tag);
-          const probe = probeResults[cn.tag];
-          const delay = probe?.delayMs ?? rt?.delayMs ?? 0;
-          const alive = probe?.alive ?? rt?.alive;
-          const isSelected = rt?.selected ?? false;
-          return {
-            id: cn.tag,
-            name: cn.tag,
-            protocol: cn.protocol !== 'unknown' ? cn.protocol : (rt?.kind ?? 'Zero'),
-            delay,
-            domain: isSelected ? 'selected'
-              : alive === false ? 'unavailable'
-              : rt?.groupName ?? 'policy',
-          };
-        });
-      return;
-    }
-
-    // ── Path 2: runtime groups (kernel connected, no static config) ──
-    if (groups.length > 0) {
-      const seen = new Set<string>();
-      const nodes: ProxyNode[] = [];
-      for (const group of groups) {
-        for (const outbound of group.outbounds) {
-          const key = outbound.tag.toLowerCase();
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const probe = probeResults[outbound.tag];
-          nodes.push({
-            id: `${group.name}:${outbound.tag}`,
-            name: outbound.tag,
-            protocol: outbound.type || 'Zero',
-            delay: probe?.delayMs ?? outbound.delayMs ?? 0,
-            domain: group.selected === outbound.tag ? 'selected' : (probe?.alive ?? outbound.alive) === false ? 'unavailable' : group.name,
-          });
-        }
-      }
-      allNodes = nodes;
-      return;
-    }
-
-    // ── Path 3: last resort — any data scraped from events ──
-    allNodes = overviewData.proxyNodes;
+    return map;
   });
 
-  const filteredNodes = $derived.by(() => {
-    let nodes = allNodes;
-    if (selectedGroup) {
-      const group = groups.find(g => g.name === selectedGroup);
-      if (group && group.outbounds.length > 0) {
-        const tags = new Set(group.outbounds.map(o => o.tag));
-        const matched = nodes.filter(n => tags.has(n.name));
-        // Defensive: only apply group filter if it doesn't empty the list.
-        // A group may exist in config but have no outbounds loaded yet
-        // from the kernel, which would incorrectly hide all nodes.
-        if (matched.length > 0) nodes = matched;
+  // ── Build the full node list: config static attributes + runtime overlay.
+  //     Falls back to runtime-only / event-scraped nodes when no config. ──
+  const allNodes = $derived.by<ProxyNode[]>(() => {
+    // touch reactive sources explicitly
+    const cnodes = guiState.configNodes;
+    void runtimeOverlay;
+    void delayHistory.history; // re-run when history updates
+
+    // Path A: config nodes (static skeleton) + runtime overlay + delay history
+    if (cnodes.length > 0) {
+      return cnodes
+        .filter((cn) => !cn.isSelector)
+        .map<ProxyNode>((cn) => {
+          const rt = runtimeOverlay.get(cn.tag);
+          const parsed = parseNodeName(cn.tag);
+          const histLatest = delayHistory.latest(cn.tag);
+          const delay = rt?.delayMs ?? histLatest ?? 0;
+          return {
+            id: cn.tag,
+            tag: cn.tag,
+            name: cn.tag,
+            emoji: parsed.emoji,
+            cleanName: parsed.cleanName,
+            protocol: cn.protocol !== 'unknown' ? cn.protocol : 'proxy',
+            delay,
+            selected: rt?.selected,
+            alive: rt?.alive,
+            domain: rt?.groupName ?? 'policy',
+            server: cn.server,
+            port: cn.port,
+            udp: cn.udp,
+            network: cn.network,
+            tls: cn.tls,
+            sni: cn.sni,
+            cipher: cn.cipher,
+          };
+        });
+    }
+
+    // Path B: runtime groups only (kernel connected, no static config)
+    const seen = new Set<string>();
+    const out: ProxyNode[] = [];
+    for (const group of groups) {
+      for (const outbound of group.outbounds) {
+        const key = outbound.tag.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const parsed = parseNodeName(outbound.tag);
+        out.push({
+          id: `${group.name}:${outbound.tag}`,
+          tag: outbound.tag,
+          name: outbound.tag,
+          emoji: parsed.emoji,
+          cleanName: parsed.cleanName,
+          protocol: outbound.type || 'proxy',
+          delay: outbound.delayMs ?? delayHistory.latest(outbound.tag) ?? 0,
+          selected: group.selected === outbound.tag,
+          alive: outbound.alive,
+          domain: group.name,
+        });
       }
     }
-    if (searchQuery.trim()) {
-      const q = searchQuery.trim().toLowerCase();
-      nodes = nodes.filter(n => n.name.toLowerCase().includes(q) || n.protocol.toLowerCase().includes(q));
-    }
+    if (out.length > 0) return out;
+
+    // Path C: last resort — nodes scraped from events
+    return overviewData.proxyNodes;
+  });
+
+  // ── Filtering + sorting ──
+  function matchesSearch(node: ProxyNode, q: string): boolean {
+    if (!q) return true;
+    const hay = `${node.name} ${node.protocol} ${node.server ?? ''} ${node.cleanName ?? ''}`.toLowerCase();
+    return hay.includes(q);
+  }
+
+  function sortNodes(nodes: ProxyNode[]): ProxyNode[] {
     return [...nodes].sort((a, b) => {
       if (sortMode === 'delay') {
         if (a.delay === 0 && b.delay > 0) return 1;
@@ -161,33 +214,82 @@
       }
       return a.name.localeCompare(b.name);
     });
+  }
+
+  const filteredNodes = $derived.by(() => {
+    const q = searchQuery.trim().toLowerCase();
+    let nodes = allNodes.filter((n) => matchesSearch(n, q));
+
+    if (selectedGroup) {
+      const group = groups.find((g) => g.name === selectedGroup);
+      if (group && group.outbounds.length > 0) {
+        const tags = new Set(group.outbounds.map((o) => o.tag));
+        const matched = nodes.filter((n) => tags.has(n.tag));
+        // Only apply group filter if it doesn't empty the list (a group may
+        // exist in config but not yet loaded from the kernel).
+        if (matched.length > 0) nodes = matched;
+      }
+    }
+    return sortNodes(nodes);
   });
 
-  const activeNodeId = $derived(
-    groups.flatMap(g => g.outbounds).find(o => o.tag === groups.find(g => g.selected)?.selected)?.tag
-    ?? groups.find(g => g.selected)?.selected
-  );
-
-  // ── Group kind label ──
-  function groupKindLabel(kind?: string): string {
-    if (!kind) return '';
-    const k = kind.toLowerCase();
-    if (k.includes('selector')) return 'Selector';
-    if (k.includes('urltest') || k.includes('url_test')) return 'URLTest';
-    if (k.includes('fallback')) return 'Fallback';
-    if (k.includes('loadbalance') || k.includes('load_balance')) return 'LB';
-    return kind;
+  // ── "All nodes" view: partition by policy group for collapsible sections.
+  //     A node can belong to multiple groups; we assign it to the first
+  //     matching group to avoid duplicates. Ungrouped nodes go to "其他". ──
+  interface NodeSection {
+    name: string;
+    kind?: string;
+    nodes: ProxyNode[];
   }
 
-  function groupKindColor(kind?: string): string {
-    if (!kind) return '';
-    const k = kind.toLowerCase();
-    if (k.includes('selector')) return '#6366F1';
-    if (k.includes('urltest') || k.includes('url_test')) return '#F59E0B';
-    if (k.includes('fallback')) return '#10B981';
-    if (k.includes('loadbalance') || k.includes('load_balance')) return '#EC4899';
-    return '';
-  }
+  const sections = $derived.by<NodeSection[]>(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const filtered = allNodes.filter((n) => matchesSearch(n, q));
+    if (filtered.length === 0) return [];
+
+    // tag → first group that contains it
+    const tagToGroup = new Map<string, string>();
+    for (const g of groups) {
+      for (const ob of g.outbounds) {
+        if (!tagToGroup.has(ob.tag)) tagToGroup.set(ob.tag, g.name);
+      }
+    }
+
+    const buckets = new Map<string, ProxyNode[]>();
+    const groupOrder: string[] = groups.map((g) => g.name);
+    const orphan: ProxyNode[] = [];
+
+    for (const node of filtered) {
+      const gname = tagToGroup.get(node.tag);
+      if (gname) {
+        if (!buckets.has(gname)) buckets.set(gname, []);
+        buckets.get(gname)!.push(node);
+      } else {
+        orphan.push(node);
+      }
+    }
+
+    const out: NodeSection[] = [];
+    for (const name of groupOrder) {
+      const items = buckets.get(name);
+      if (items && items.length > 0) {
+        const g = groups.find((x) => x.name === name);
+        out.push({ name, kind: g?.kind, nodes: sortNodes(items) });
+      }
+    }
+    if (orphan.length > 0) {
+      out.push({ name: '其他', nodes: sortNodes(orphan) });
+    }
+    return out;
+  });
+
+  // ── Active selected tag (for highlight) ──
+  const activeNodeId = $derived.by(() => {
+    for (const g of groups) {
+      if (g.selected) return g.selected;
+    }
+    return undefined;
+  });
 
   // ── Actions ──
   async function handleSelect(node: ProxyNode) {
@@ -195,12 +297,18 @@
     switching = node.id;
     lastError = null;
     try {
-      const policyTag = selectedGroup
-        ?? groups.find(g => g.outbounds.some(o => o.tag === node.name))?.name
+      const policyTag =
+        selectedGroup
+        ?? runtimeOverlay.get(node.tag)?.groupName
+        ?? groups.find((g) => g.outbounds.some((o) => o.tag === node.tag))?.name
         ?? 'proxy';
       const result = await selectPolicy(policyTag, node.name);
-      if ((result as any).error) {
-        lastError = (result as any).error.message;
+      if (!result.available) {
+        lastError = '内核未连接，无法切换节点';
+      } else if (result.error) {
+        lastError = result.error.message;
+      } else {
+        await guiState.refreshPolicyGroups();
       }
     } catch (e) {
       lastError = String(e);
@@ -215,13 +323,7 @@
     lastError = null;
     try {
       const result = await guiClientProbeNode(node.name);
-      probeResults = {
-        ...probeResults,
-        [node.name]: {
-          delayMs: result.latencyMs,
-          alive: result.reachable,
-        },
-      };
+      delayHistory.record(node.tag, result.latencyMs, result.reachable);
       await guiState.refreshPolicyGroups();
     } catch (e) {
       lastError = String(e);
@@ -236,47 +338,45 @@
     probeProgress = { done: 0, total: filteredNodes.length };
     lastError = null;
 
-    const tags = filteredNodes.map(n => n.name);
+    const tags = filteredNodes.map((n) => n.name);
 
-    // Listen for progressive results from the backend
     let unlistenResult: UnlistenFn | undefined;
+    let unlistenProgress: UnlistenFn | undefined;
     let unlistenComplete: UnlistenFn | undefined;
 
     try {
-      unlistenResult = await listen<{ targetTag: string; reachable: boolean; latencyMs?: number }>('probe:result', (event) => {
-        const { targetTag, reachable, latencyMs } = event.payload;
-        probeResults = {
-          ...probeResults,
-          [targetTag]: { delayMs: latencyMs, alive: reachable },
-        };
-      });
+      unlistenResult = await listen<{ targetTag: string; reachable: boolean; latencyMs?: number }>(
+        'probe:result',
+        (event) => {
+          const { targetTag, reachable, latencyMs } = event.payload;
+          delayHistory.record(targetTag, latencyMs, reachable);
+        },
+      );
 
-      unlistenComplete = await listen<{ total: number; reachable: number; failed: number }>('probe:complete', async () => {
-        await guiState.refreshPolicyGroups();
-        probingAll = false;
-      });
+      unlistenProgress = await listen<{ done: number; total: number }>(
+        'probe:progress',
+        (event) => {
+          probeProgress = { done: event.payload.done, total: event.payload.total };
+        },
+      );
 
-      // Start batch — backend handles concurrency and emits events
+      unlistenComplete = await listen<{ total: number; reachable: number; failed: number }>(
+        'probe:complete',
+        async () => {
+          await guiState.refreshPolicyGroups();
+          probingAll = false;
+        },
+      );
+
       await guiClientProbeStart(tags);
     } catch (e) {
       lastError = String(e);
       probingAll = false;
     } finally {
       unlistenResult?.();
+      unlistenProgress?.();
       unlistenComplete?.();
     }
-  }
-
-  function formatDelay(delay: number): string {
-    if (delay <= 0) return '—';
-    if (delay < 1000) return `${delay}`;
-    return `${(delay / 1000).toFixed(1)}s`;
-  }
-
-  // Delay bar width as percentage (max 1000ms = 100%)
-  function delayBarWidth(delay: number): string {
-    if (delay <= 0) return '0%';
-    return `${Math.min(100, (delay / 1000) * 100)}%`;
   }
 
   function selectFirstGroup() {
@@ -288,6 +388,41 @@
   $effect(() => {
     selectFirstGroup();
   });
+
+  // ── Sparkline geometry for delay-history popover ──
+  interface SparkPoint {
+    x: number;
+    y: number;
+    alive: boolean;
+  }
+
+  interface Sparkline {
+    maxDelay: number;
+    points: SparkPoint[];
+  }
+
+  /** Build the normalized point set for a mini delay sparkline (120×32 viewBox). */
+  function buildSparkline(hist: DelayEntry[]): Sparkline {
+    const maxDelay = Math.max(1, ...hist.map((h) => h.delay));
+    const points = hist.map((h, i) => {
+      const x = (i / Math.max(1, hist.length - 1)) * 120;
+      const y = 30 - (h.delay > 0 ? Math.min(28, (h.delay / maxDelay) * 28) : 0);
+      return { x, y, alive: h.delay > 0 };
+    });
+    return { maxDelay, points };
+  }
+
+  /** Reduce sparkline points to an SVG `polyline points=` string. */
+  function sparklinePath(spark: Sparkline): string {
+    return spark.points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  }
+
+  /** Mean latency across alive probes, for the popover footer. */
+  function meanDelay(hist: DelayEntry[]): string {
+    const alive = hist.filter((h) => h.delay > 0);
+    if (alive.length === 0) return '—';
+    return String(Math.round(alive.reduce((a, b) => a + b.delay, 0) / alive.length));
+  }
 </script>
 
 <div class="nodes-root animate-fade-in">
@@ -300,7 +435,7 @@
 
     <button
       class="group-item {!selectedGroup ? 'active' : ''}"
-      onclick={() => selectedGroup = null}
+      onclick={() => (selectedGroup = null)}
     >
       <div class="group-info">
         <span class="group-name">全部节点</span>
@@ -311,13 +446,16 @@
     {#each groups as group}
       <button
         class="group-item {selectedGroup === group.name ? 'active' : ''}"
-        onclick={() => selectedGroup = group.name}
+        onclick={() => (selectedGroup = group.name)}
       >
         <div class="group-info">
           <div class="group-name-row">
             <span class="group-name truncate">{group.name}</span>
-            {#if group.kind}
-              <span class="group-kind" style="color: {groupKindColor(group.kind)}">{groupKindLabel(group.kind)}</span>
+            {#if getGroupKindStyle(group.kind)}
+              <span
+                class="group-kind"
+                style="color: {getGroupKindStyle(group.kind)?.color}"
+              >{getGroupKindStyle(group.kind)?.label}</span>
             {/if}
           </div>
           {#if group.selected}
@@ -347,6 +485,13 @@
       <div class="toolbar-left">
         <span class="node-title">{selectedGroup || '全部节点'}</span>
         <span class="node-count">{filteredNodes.length}</span>
+        <span
+          class="conn-badge {isConnected ? 'on' : 'off'}"
+          title={isConnected ? '内核已连接' : '内核未连接，延迟与切换不可用'}
+        >
+          <span class="conn-dot"></span>
+          {isConnected ? '已连接' : '未连接'}
+        </span>
       </div>
       <div class="toolbar-right">
         <!-- Search -->
@@ -354,61 +499,45 @@
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="search-icon">
             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
           </svg>
-          <input
-            bind:value={searchQuery}
-            placeholder="搜索节点…"
-            class="search-input"
-          />
+          <input bind:value={searchQuery} placeholder="搜索节点…" class="search-input" />
         </div>
 
         <!-- Sort toggle -->
         <div class="sort-seg">
-          <button
-            class="sort-btn {sortMode === 'delay' ? 'active' : ''}"
-            onclick={() => sortMode = 'delay'}
-          >延迟</button>
-          <button
-            class="sort-btn {sortMode === 'name' ? 'active' : ''}"
-            onclick={() => sortMode = 'name'}
-          >名称</button>
+          <button class="sort-btn {sortMode === 'delay' ? 'active' : ''}" onclick={() => (sortMode = 'delay')}>延迟</button>
+          <button class="sort-btn {sortMode === 'name' ? 'active' : ''}" onclick={() => (sortMode = 'name')}>名称</button>
         </div>
 
         <!-- View mode toggle (Pro mode only; Lite always uses list) -->
         {#if !isLite}
-        <div class="view-seg">
-          <button
-            class="view-btn {viewMode === 'list' ? 'active' : ''}"
-            onclick={() => viewMode = 'list'}
-            title="列表视图"
-            aria-label="列表视图"
-          >
-            <!-- List icon -->
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
-              <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
-            </svg>
-          </button>
-          <button
-            class="view-btn {viewMode === 'grid' ? 'active' : ''}"
-            onclick={() => viewMode = 'grid'}
-            title="网格视图"
-            aria-label="网格视图"
-          >
-            <!-- Grid icon -->
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
-              <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
-            </svg>
-          </button>
-        </div>
+          <div class="view-seg">
+            <button
+              class="view-btn {viewMode === 'list' ? 'active' : ''}"
+              onclick={() => (viewMode = 'list')}
+              title="列表视图"
+              aria-label="列表视图"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+                <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+              </svg>
+            </button>
+            <button
+              class="view-btn {viewMode === 'grid' ? 'active' : ''}"
+              onclick={() => (viewMode = 'grid')}
+              title="网格视图"
+              aria-label="网格视图"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+                <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+              </svg>
+            </button>
+          </div>
         {/if}
 
         <!-- Probe all -->
-        <button
-          class="probe-all-btn"
-          onclick={handleProbeAll}
-          disabled={probingAll || filteredNodes.length === 0}
-        >
+        <button class="probe-all-btn" onclick={handleProbeAll} disabled={probingAll || filteredNodes.length === 0}>
           {#if probingAll}
             <span class="probe-spinner">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="animate-spin">
@@ -436,132 +565,74 @@
             <line x1="12" y1="16" x2="12.01" y2="16"/>
           </svg>
         </div>
-        <span class="empty-text">{searchQuery ? '无匹配节点' : '暂无节点数据'}</span>
         {#if searchQuery}
-          <button class="empty-clear" onclick={() => searchQuery = ''}>清除搜索</button>
+          <span class="empty-text">无匹配节点</span>
+          <button class="empty-clear" onclick={() => (searchQuery = '')}>清除搜索</button>
+        {:else if allNodes.length === 0}
+          <span class="empty-text">暂无节点数据</span>
+          <span class="empty-hint">
+            {#if !isConnected}
+              内核未连接，且当前没有生效的代理配置。请先在「配置」页导入并启用一份配置。
+            {:else}
+              当前配置不包含节点，请在「配置」页导入一份包含 outbounds 的代理配置。
+            {/if}
+          </span>
+          <button class="empty-clear" onclick={() => (store.activeTab = 'profiles')}>前往配置页</button>
+        {:else}
+          <span class="empty-text">暂无节点数据</span>
         {/if}
       </div>
-    {:else if viewMode === 'list'}
-      <!-- ═══════ LIST VIEW ═══════ -->
-      <div class="node-list">
-        {#each filteredNodes as node (node.id)}
-          {@const isActive = activeNodeId === node.name}
-          {@const isSwitching = switching === node.id}
-          {@const isProbing = probing === node.id}
-          {@const ds = getDelayStyle(node.delay)}
-
-          <div class="node-row {isActive ? 'active' : ''}">
-            <!-- Main click area: select node -->
-            <button
-              class="node-main"
-              onclick={() => handleSelect(node)}
-              disabled={switching !== null || !store.isActionOperable('policies.select')}
-            >
-              <!-- Radio indicator -->
-              <span class="node-radio {isActive ? 'on' : ''}">
-                {#if isSwitching}
-                  <span class="node-spin-inline">⟳</span>
-                {/if}
-              </span>
-
-              <!-- Node info -->
-              <div class="node-info">
-                <span class="node-name" class:active-name={isActive}>{node.name}</span>
-                <div class="node-meta">
-                  <span class="proto-label">{node.protocol}</span>
-                  {#if node.domain && node.domain !== 'selected' && node.domain !== 'policy' && node.domain !== 'unavailable'}
-                    <span class="node-domain">{node.domain}</span>
-                  {/if}
-                  {#if node.domain === 'unavailable'}
-                    <span class="node-unavailable">离线</span>
-                  {/if}
-                </div>
-              </div>
-            </button>
-
-            <!-- Right side: delay + probe -->
-            <div class="node-actions">
-              <!-- Delay pill -->
-              <span class="delay-pill" style="color: {getDelayColor(node.delay)}; background: {ds.bg};">
-                {formatDelay(node.delay)}
-                {#if node.delay > 0}
-                  <span class="delay-unit">ms</span>
-                {/if}
-              </span>
-
-              <!-- Delay bar -->
-              <div class="delay-bar-track">
-                <div class="delay-bar-fill" style="width: {delayBarWidth(node.delay)}; background: {ds.bar};"></div>
-              </div>
-
-              <!-- Probe button -->
-              <button
-                class="probe-btn"
-                onclick={() => handleProbe(node)}
-                disabled={isProbing || probingAll}
-                title="测试延迟"
-                aria-label="测试 {node.name} 延迟"
-              >
-                {#if isProbing}
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="animate-spin">
-                    <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                  </svg>
-                {:else}
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                  </svg>
-                {/if}
-              </button>
-            </div>
-          </div>
-        {/each}
-      </div>
+    {:else if selectedGroup}
+      <!-- ═══════ SINGLE GROUP VIEW ═══════ -->
+      {#if viewMode === 'list'}
+        <div class="node-list">
+          {#each filteredNodes as node (node.id)}
+            {@render nodeRow(node)}
+          {/each}
+        </div>
+      {:else}
+        <div class="node-grid">
+          {#each filteredNodes as node (node.id)}
+            {@render nodeCard(node)}
+          {/each}
+        </div>
+      {/if}
     {:else}
-      <!-- ═══════ GRID VIEW ═══════ -->
-      <div class="node-grid">
-        {#each filteredNodes as node (node.id)}
-          {@const isActive = activeNodeId === node.name}
-          {@const isSwitching = switching === node.id}
-          {@const ds = getDelayStyle(node.delay)}
-
-          <button
-            class="grid-card {isActive ? 'active' : ''} {isSwitching ? 'switching' : ''}"
-            onclick={() => handleSelect(node)}
-            disabled={switching !== null || !store.isActionOperable('policies.select')}
-          >
-            <!-- Header: name + status -->
-            <div class="grid-card-header">
-              <span class="grid-card-name" class:active-name={isActive}>{node.name}</span>
-              {#if isActive}
-                <span class="grid-check" aria-hidden="true">
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="2,5 4,7 8,3"/>
-                  </svg>
+      <!-- ═══════ ALL-NODES VIEW: collapsible group sections ═══════ -->
+      <div class="node-sections">
+        {#each sections as section (section.name)}
+          {@const isCollapsed = collapsedGroups.has(section.name)}
+          <section class="node-section">
+            <button class="section-header" onclick={() => toggleCollapse(section.name)}>
+              <span class="section-caret {isCollapsed ? 'collapsed' : ''}">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="9,18 15,12 9,6"/>
+                </svg>
+              </span>
+              <span class="section-title">{section.name}</span>
+              {#if getGroupKindStyle(section.kind)}
+                <span class="section-kind" style="color: {getGroupKindStyle(section.kind)?.color}">
+                  {getGroupKindStyle(section.kind)?.label}
                 </span>
               {/if}
-            </div>
-
-            <!-- Protocol label -->
-            <span class="proto-label grid-proto">
-              {node.protocol}
-            </span>
-
-            <!-- Bottom: delay -->
-            <div class="grid-card-footer">
-              {#if isSwitching}
-                <span class="grid-spin">⟳</span>
+              <span class="section-count">{section.nodes.length}</span>
+            </button>
+            {#if !isCollapsed}
+              {#if viewMode === 'list'}
+                <div class="node-list">
+                  {#each section.nodes as node (node.id)}
+                    {@render nodeRow(node)}
+                  {/each}
+                </div>
               {:else}
-                <span class="grid-delay" style="color: {getDelayColor(node.delay)};">
-                  {formatDelay(node.delay)}{#if node.delay > 0}<span class="grid-delay-unit">ms</span>{/if}
-                </span>
+                <div class="node-grid">
+                  {#each section.nodes as node (node.id)}
+                    {@render nodeCard(node)}
+                  {/each}
+                </div>
               {/if}
-            </div>
-
-            <!-- Bottom delay bar -->
-            <div class="grid-bar-track">
-              <div class="grid-bar-fill" style="width: {delayBarWidth(node.delay)}; background: {ds.bar};"></div>
-            </div>
-          </button>
+            {/if}
+          </section>
         {/each}
       </div>
     {/if}
@@ -573,13 +644,190 @@
           <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
         <span>{lastError}</span>
-        <button class="error-dismiss" onclick={() => lastError = null} aria-label="关闭错误提示">
+        <button class="error-dismiss" onclick={() => (lastError = null)} aria-label="关闭错误提示">
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="2" y1="2" x2="8" y2="8"/><line x1="8" y1="2" x2="2" y2="8"/></svg>
         </button>
       </div>
     {/if}
   </div>
 </div>
+
+<!-- ═══════════════════════════════════════
+     NODE ROW SNIPPET (list view)
+     ═══════════════════════════════════════ -->
+{#snippet nodeRow(node: ProxyNode)}
+  {@const isActive = activeNodeId === node.tag}
+  {@const isSwitching = switching === node.id}
+  {@const isProbing = probing === node.id}
+  {@const ds = gradeDelay(node.delay, node.alive)}
+  {@const ps = getProtocolStyle(node.protocol)}
+  {@const chips = getNodeChips(node)}
+  {@const hist = delayHistory.getHistory(node.tag)}
+
+  <div class="node-row {isActive ? 'active' : ''}">
+    <!-- Main click area: select node -->
+    <button
+      class="node-main"
+      onclick={() => handleSelect(node)}
+      disabled={switching !== null || !store.isActionOperable('policies.select')}
+    >
+      <!-- Radio indicator -->
+      <span class="node-radio {isActive ? 'on' : ''}">
+        {#if isSwitching}
+          <span class="node-spin-inline">⟳</span>
+        {/if}
+      </span>
+
+      <!-- Node info -->
+      <div class="node-info">
+        <span class="node-name" class:active-name={isActive}>
+          {#if node.emoji}<span class="node-emoji">{node.emoji}</span>{/if}
+          {node.cleanName || node.name}
+        </span>
+        <div class="node-meta">
+          <span class="proto-label" style="background: {ps.bg}; color: {ps.color};">{ps.label}</span>
+          {#each chips as chip (chip.key)}
+            <span class="attr-chip tone-{chip.tone}" title={chip.title}>{chip.label}</span>
+          {/each}
+          {#if node.domain && node.domain !== 'selected' && node.domain !== 'policy' && node.domain !== 'unavailable'}
+            <span class="node-domain">{node.domain}</span>
+          {/if}
+          {#if ds.level === 'dead'}
+            <span class="node-unavailable">离线</span>
+          {/if}
+        </div>
+      </div>
+    </button>
+
+    <!-- Right side: delay + probe -->
+    <div class="node-actions">
+      <!-- Delay pill with hover sparkline popover -->
+      <div class="delay-wrap">
+        <span class="delay-pill" style="color: {ds.color}; background: {ds.bg};">
+          {formatDelay(node.delay)}
+          {#if node.delay > 0}<span class="delay-unit">ms</span>{/if}
+          {#if ds.grade && ds.grade !== '—'}
+            <span class="delay-grade">{ds.grade}</span>
+          {/if}
+        </span>
+        {#if hist.length >= 2}
+          {@const spark = buildSparkline(hist)}
+          <div class="delay-popover">
+            <span class="popover-title">历史延迟 ({hist.length})</span>
+            <svg class="sparkline" width="120" height="32" viewBox="0 0 120 32" preserveAspectRatio="none">
+              <polyline points={sparklinePath(spark)} fill="none" stroke={ds.bar} stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" />
+              {#each spark.points as p}
+                <circle cx={p.x.toFixed(1)} cy={p.y.toFixed(1)} r="1.5" fill={p.alive ? ds.bar : 'var(--destructive)'} />
+              {/each}
+            </svg>
+            <span class="popover-stats">
+              最新 {hist[hist.length - 1].delay > 0 ? hist[hist.length - 1].delay + 'ms' : '超时'}
+              · 均 {meanDelay(hist)}ms
+            </span>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Delay bar -->
+      <div class="delay-bar-track">
+        <div class="delay-bar-fill" style="width: {delayBarWidth(node.delay)}; background: {ds.bar};"></div>
+      </div>
+
+      <!-- Probe button -->
+      <button
+        class="probe-btn"
+        onclick={() => handleProbe(node)}
+        disabled={isProbing || probingAll}
+        title="测试延迟"
+        aria-label="测试 {node.name} 延迟"
+      >
+        {#if isProbing}
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="animate-spin">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+          </svg>
+        {:else}
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+          </svg>
+        {/if}
+      </button>
+    </div>
+  </div>
+{/snippet}
+
+<!-- ═══════════════════════════════════════
+     NODE CARD SNIPPET (grid view)
+     ═══════════════════════════════════════ -->
+{#snippet nodeCard(node: ProxyNode)}
+  {@const isActive = activeNodeId === node.tag}
+  {@const isSwitching = switching === node.id}
+  {@const ds = gradeDelay(node.delay, node.alive)}
+  {@const ps = getProtocolStyle(node.protocol)}
+  {@const chips = getNodeChips(node)}
+  {@const hist = delayHistory.getHistory(node.tag)}
+
+  <div class="grid-card-wrap">
+    <button
+      class="grid-card {isActive ? 'active' : ''} {isSwitching ? 'switching' : ''}"
+      onclick={() => handleSelect(node)}
+      disabled={switching !== null || !store.isActionOperable('policies.select')}
+    >
+      <!-- Header: name + status -->
+      <div class="grid-card-header">
+        <span class="grid-card-name" class:active-name={isActive}>
+          {#if node.emoji}<span class="node-emoji">{node.emoji}</span>{/if}
+          {node.cleanName || node.name}
+        </span>
+        {#if isActive}
+          <span class="grid-check" aria-hidden="true">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="2,5 4,7 8,3"/>
+            </svg>
+          </span>
+        {/if}
+      </div>
+
+      <!-- Protocol + attribute badges -->
+      <div class="grid-badges">
+        <span class="proto-label" style="background: {ps.bg}; color: {ps.color};">{ps.label}</span>
+        {#each chips as chip (chip.key)}
+          <span class="attr-chip tone-{chip.tone}" title={chip.title}>{chip.label}</span>
+        {/each}
+      </div>
+
+      <!-- Bottom: delay -->
+      <div class="grid-card-footer">
+        {#if isSwitching}
+          <span class="grid-spin">⟳</span>
+        {:else}
+          <span class="grid-delay" style="color: {ds.color};">
+            {formatDelay(node.delay)}{#if node.delay > 0}<span class="grid-delay-unit">ms</span>{/if}
+            {#if ds.grade && ds.grade !== '—'}<span class="grid-delay-grade">{ds.grade}</span>{/if}
+          </span>
+        {/if}
+      </div>
+
+      <!-- Bottom delay bar -->
+      <div class="grid-bar-track">
+        <div class="grid-bar-fill" style="width: {delayBarWidth(node.delay)}; background: {ds.bar};"></div>
+      </div>
+    </button>
+
+    {#if hist.length >= 2}
+      {@const spark = buildSparkline(hist)}
+      <div class="grid-delay-popover">
+        <span class="popover-title">历史延迟 ({hist.length})</span>
+        <svg class="sparkline" width="120" height="32" viewBox="0 0 120 32" preserveAspectRatio="none">
+          <polyline points={sparklinePath(spark)} fill="none" stroke={ds.bar} stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round" />
+        </svg>
+        <span class="popover-stats">
+          最新 {hist[hist.length - 1].delay > 0 ? hist[hist.length - 1].delay + 'ms' : '超时'}
+          · 均 {meanDelay(hist)}ms
+        </span>
+      </div>
+    {/if}
+  </div>
+{/snippet}
 
 <style>
   /* ═══════════════════════════════════════
@@ -757,6 +1005,7 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+    position: relative;
   }
 
   /* ── Toolbar ── */
@@ -799,6 +1048,51 @@
     color: var(--muted-foreground);
   }
 
+  /* Kernel connection badge */
+  .conn-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: 4px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  .conn-badge.on {
+    background: rgba(34, 197, 94, 0.10);
+    color: #16A34A;
+  }
+
+  .conn-badge.off {
+    background: rgba(245, 158, 11, 0.10);
+    color: #D97706;
+  }
+
+  :global(.dark) .conn-badge.on {
+    background: rgba(74, 222, 128, 0.10);
+    color: #4ADE80;
+  }
+
+  :global(.dark) .conn-badge.off {
+    background: rgba(251, 191, 36, 0.10);
+    color: #FBBF24;
+  }
+
+  .conn-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
+  }
+
+  .conn-badge.on .conn-dot {
+    box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.18);
+  }
+
   /* Search */
   .search-wrap {
     position: relative;
@@ -837,8 +1131,9 @@
     width: 180px;
   }
 
-  /* Sort segment */
-  .sort-seg {
+  /* Sort / view segments */
+  .sort-seg,
+  .view-seg {
     display: inline-flex;
     gap: 1px;
     background: var(--segment-bg);
@@ -859,20 +1154,12 @@
     transition: all 0.12s ease;
   }
 
-  .sort-btn.active {
+  .sort-btn.active,
+  .view-btn.active {
     background: var(--segment-active-bg);
     color: var(--foreground);
     font-weight: 600;
     box-shadow: var(--segment-active-shadow);
-  }
-
-  /* View mode segment */
-  .view-seg {
-    display: inline-flex;
-    gap: 1px;
-    background: var(--segment-bg);
-    padding: 2px;
-    border-radius: 6px;
   }
 
   .view-btn {
@@ -887,12 +1174,6 @@
     color: var(--muted-foreground);
     cursor: pointer;
     transition: all 0.12s ease;
-  }
-
-  .view-btn.active {
-    background: var(--segment-active-bg);
-    color: var(--foreground);
-    box-shadow: var(--segment-active-shadow);
   }
 
   /* Probe all button */
@@ -959,6 +1240,15 @@
     color: var(--muted-foreground);
   }
 
+  .empty-hint {
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--muted-foreground);
+    opacity: 0.7;
+    max-width: 280px;
+    text-align: center;
+  }
+
   .empty-clear {
     font-size: 11px;
     color: var(--accent-foreground);
@@ -972,16 +1262,85 @@
   .empty-clear:hover { opacity: 0.8; }
 
   /* ═══════════════════════════════════════
+     COLLAPSIBLE SECTIONS (all-nodes view)
+     ═══════════════════════════════════════ */
+  .node-sections {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 6px 8px;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .node-section {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    border-radius: 6px;
+    text-align: left;
+    transition: background 0.12s ease;
+  }
+
+  .section-header:hover { background: var(--muted); }
+
+  .section-caret {
+    display: inline-flex;
+    color: var(--muted-foreground);
+    transition: transform 0.15s ease;
+  }
+
+  .section-caret.collapsed {
+    transform: rotate(0deg);
+  }
+
+  .section-caret:not(.collapsed) {
+    transform: rotate(90deg);
+  }
+
+  .section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--foreground);
+  }
+
+  .section-kind {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    opacity: 0.8;
+  }
+
+  .section-count {
+    font-size: 10.5px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--muted);
+    color: var(--muted-foreground);
+    margin-left: auto;
+  }
+
+  /* ═══════════════════════════════════════
      LIST VIEW
      ═══════════════════════════════════════ */
   .node-list {
-    flex: 1;
-    overflow-y: auto;
     padding: 4px 6px;
     display: flex;
     flex-direction: column;
     gap: 1px;
-    min-height: 0;
   }
 
   .node-row {
@@ -1090,21 +1449,75 @@
     font-weight: 600;
   }
 
+  .node-emoji {
+    margin-right: 2px;
+  }
+
   .node-meta {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
+    flex-wrap: wrap;
   }
 
-  /* Protocol label */
+  /* Protocol + attribute chips */
   .proto-label {
-    font-size: 10.5px;
-    font-weight: 600;
-    color: var(--muted-foreground);
+    display: inline-flex;
+    align-items: center;
+    height: 15px;
+    padding: 0 5px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
     text-transform: uppercase;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .attr-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 15px;
+    padding: 0 4px;
+    border-radius: 3px;
+    font-size: 8.5px;
+    font-weight: 700;
     letter-spacing: 0.02em;
     white-space: nowrap;
     flex-shrink: 0;
+    border: 1px solid transparent;
+  }
+
+  .attr-chip.tone-success {
+    background: rgba(34, 197, 94, 0.10);
+    color: #16A34A;
+    border-color: rgba(34, 197, 94, 0.18);
+  }
+
+  .attr-chip.tone-accent {
+    background: rgba(99, 102, 241, 0.10);
+    color: var(--accent-foreground);
+    border-color: rgba(99, 102, 241, 0.18);
+  }
+
+  .attr-chip.tone-warning {
+    background: rgba(245, 158, 11, 0.10);
+    color: #D97706;
+    border-color: rgba(245, 158, 11, 0.18);
+  }
+
+  .attr-chip.tone-muted {
+    background: var(--muted);
+    color: var(--muted-foreground);
+  }
+
+  :global(.dark) .attr-chip.tone-success {
+    color: #4ADE80;
+  }
+
+  :global(.dark) .attr-chip.tone-warning {
+    color: #FBBF24;
   }
 
   .node-domain {
@@ -1134,11 +1547,15 @@
     padding-right: 2px;
   }
 
-  /* Delay pill */
+  /* Delay pill + hover popover */
+  .delay-wrap {
+    position: relative;
+  }
+
   .delay-pill {
     display: inline-flex;
-    align-items: baseline;
-    gap: 1px;
+    align-items: center;
+    gap: 2px;
     height: 22px;
     padding: 0 8px;
     border-radius: 4px;
@@ -1150,7 +1567,7 @@
     white-space: nowrap;
     min-width: 52px;
     justify-content: center;
-    align-items: center;
+    cursor: default;
   }
 
   .delay-unit {
@@ -1160,7 +1577,65 @@
     margin-left: 1px;
   }
 
-  /* Delay bar (horizontal, Clash-style) */
+  .delay-grade {
+    font-size: 8.5px;
+    font-weight: 700;
+    opacity: 0.7;
+    margin-left: 2px;
+  }
+
+  /* Sparkline popover (list view) */
+  .delay-popover {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: 0;
+    z-index: 20;
+    min-width: 148px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--dialog-bg, #fff);
+    border: 1px solid var(--border);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
+    opacity: 0;
+    transform: translateY(4px);
+    pointer-events: none;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  :global(.dark) .delay-popover {
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  }
+
+  .delay-wrap:hover .delay-popover {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .popover-title {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--muted-foreground);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .sparkline {
+    display: block;
+    width: 100%;
+    overflow: visible;
+  }
+
+  .popover-stats {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--muted-foreground);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Delay bar */
   .delay-bar-track {
     width: 48px;
     height: 3px;
@@ -1205,20 +1680,22 @@
      GRID VIEW
      ═══════════════════════════════════════ */
   .node-grid {
-    flex: 1;
-    overflow-y: auto;
     padding: 10px;
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(135px, 1fr));
     gap: 8px;
     align-content: start;
-    min-height: 0;
+  }
+
+  .grid-card-wrap {
+    position: relative;
   }
 
   .grid-card {
     display: flex;
     flex-direction: column;
     gap: 4px;
+    width: 100%;
     padding: 10px 11px 12px;
     background: var(--card);
     border: 1.5px solid var(--border);
@@ -1305,11 +1782,12 @@
     color: #A5B4FC;
   }
 
-  .grid-proto {
-    font-size: 10px;
-    align-self: flex-start;
-    margin-top: 1px;
-    opacity: 0.6;
+  .grid-badges {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex-wrap: wrap;
+    min-height: 15px;
   }
 
   .grid-card-footer {
@@ -1321,6 +1799,8 @@
   }
 
   .grid-delay {
+    display: inline-flex;
+    align-items: baseline;
     font-size: 13px;
     font-weight: 700;
     font-family: var(--font-mono);
@@ -1333,6 +1813,13 @@
     font-weight: 600;
     opacity: 0.5;
     margin-left: 1px;
+  }
+
+  .grid-delay-grade {
+    font-size: 8.5px;
+    font-weight: 700;
+    opacity: 0.6;
+    margin-left: 3px;
   }
 
   .grid-spin {
@@ -1363,6 +1850,36 @@
   .grid-card:hover .grid-bar-track,
   .grid-card.active .grid-bar-track {
     opacity: 0.5;
+  }
+
+  /* Grid hover popover */
+  .grid-delay-popover {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%) translateY(4px);
+    z-index: 20;
+    min-width: 148px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--dialog-bg, #fff);
+    border: 1px solid var(--border);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  :global(.dark) .grid-delay-popover {
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(255, 255, 255, 0.06);
+  }
+
+  .grid-card-wrap:hover .grid-delay-popover {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
   }
 
   /* ═══════════════════════════════════════

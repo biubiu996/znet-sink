@@ -51,6 +51,14 @@ class GuiStateStore {
   isSwitchingTun = $state(false);
   isSwitchingMode = $state(false);
 
+  /**
+   * Bumped whenever the proxy mode (rule / global / direct) changes.
+   * Node-page components watch this to re-sync their display after a
+   * mode switch, since the kernel restart that follows invalidates the
+   * cached runtime policy snapshot.
+   */
+  modeTick = $state(0);
+
   private isInitialized = false;
   private lastStatusTick = -1;
 
@@ -338,7 +346,17 @@ class GuiStateStore {
     this.isSwitchingMode = true;
     try {
       this.proxyMode = await guiSetProxyMode(mode, true);
-      await this.refreshConnectionStatus();
+      // Mode switch restarts the core → refresh runtime state so the
+      // node page, overview, and connection panels reflect the new mode
+      // without waiting for the next status tick.
+      await Promise.allSettled([
+        this.refreshConnectionStatus(),
+        this.refreshProxyMode(),
+        this.refreshCoreOverview(),
+        this.refreshPolicyGroups(),
+        this.refreshTunStatus(),
+      ]);
+      this.modeTick++;
     } finally {
       this.isSwitchingMode = false;
     }
