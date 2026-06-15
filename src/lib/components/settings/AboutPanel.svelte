@@ -74,7 +74,7 @@
 
     <div class="config-row">
       <span class="config-label">构建标识</span>
-      <span class="config-value mono">org.zerdenet.znetsink</span>
+      <span class="config-value mono">org.zerodenet.znetsink</span>
     </div>
   </div>
 
@@ -88,11 +88,11 @@
       <span class="config-label">仓库地址</span>
       <a
         class="config-value mono link"
-        href="https://github.com/zerdenet/znet-sink"
+        href="https://github.com/zerodenet/znet-sink"
         target="_blank"
         rel="noopener noreferrer"
       >
-        github.com/zerdenet/znet-sink
+        github.com/zerodenet/znet-sink
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" class="link-icon">
           <path d="M3 1H1v8h8V7"/>
           <path d="M6 1h3v3"/>

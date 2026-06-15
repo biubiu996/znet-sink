@@ -36,7 +36,7 @@ pnpm tauri build  # Build full Tauri app bundle
 - Vite ignores watching `src-tauri/**` to avoid Rust compile issues
 - Window title: "ZNet Sink" (900x650 default size)
 - shadcn-svelte aliases configured in `components.json`
-- Package name: `org.zerdenet.znetsink`
+- Package name: `org.zerodenet.znetsink`
 
 ## Code Style
 - Svelte 5 Runes syntax
