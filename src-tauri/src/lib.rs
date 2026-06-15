@@ -100,6 +100,51 @@ fn tray_disable_system_proxy(_app: tauri::AppHandle) {
     });
 }
 
+/// Holds references to the status-dependent tray menu items so we can
+/// toggle their enabled state at runtime (e.g. disable "启动内核" while
+/// the kernel is already running). Stored via `app.manage()`.
+struct TrayMenuItems {
+    start_core: tauri::menu::MenuItem<tauri::Wry>,
+    stop_core: tauri::menu::MenuItem<tauri::Wry>,
+    restart_core: tauri::menu::MenuItem<tauri::Wry>,
+    enable_proxy: tauri::menu::MenuItem<tauri::Wry>,
+    disable_proxy: tauri::menu::MenuItem<tauri::Wry>,
+}
+
+/// Update the tray icon tooltip and the enabled state of status-dependent
+/// menu items based on the current kernel / proxy state.
+///
+/// Called from the frontend whenever connection or process state changes
+/// so the system-tray icon always reflects reality (e.g.
+/// "ZNet Sink · 服务中") without the user opening the window.
+#[tauri::command]
+fn tray_update_status(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, TrayMenuItems>,
+    running: bool,
+    connected: bool,
+) {
+    let status_label = if connected {
+        "服务中"
+    } else if running {
+        "内核监听中"
+    } else {
+        "已停止"
+    };
+
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let _ = tray.set_tooltip(Some(format!("ZNet Sink · {status_label}")));
+    }
+
+    // Mirror the actionable state into the menu so the user can't pick
+    // an action that would no-op (e.g. "启动内核" while already running).
+    let _ = state.start_core.set_enabled(!running);
+    let _ = state.stop_core.set_enabled(running);
+    let _ = state.restart_core.set_enabled(running);
+    let _ = state.enable_proxy.set_enabled(!connected);
+    let _ = state.disable_proxy.set_enabled(connected);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // ── Phase 1–2: Guard + Config (runs before Tauri builder) ──
@@ -246,6 +291,7 @@ pub fn run() {
             kernel_version_commands::kernel_list_versions,
             kernel_version_commands::kernel_install_version,
             kernel_version_commands::kernel_detect_version,
+            tray_update_status,
         ])
         // ── Phase 5: Runtime — tray, kernel lifecycle, window ──
         .setup(|app| {
@@ -404,10 +450,21 @@ pub fn run() {
                 ],
             )?;
 
+            // Hold references to the status-dependent items so
+            // `tray_update_status` can toggle their enabled state.
+            app.manage(TrayMenuItems {
+                start_core: start_core_item,
+                stop_core: stop_core_item,
+                restart_core: restart_core_item,
+                enable_proxy: enable_proxy_item,
+                disable_proxy: disable_proxy_item,
+            });
+
             let _tray_menu = TrayIconBuilder::with_id("main-tray")
-                .tooltip("ZNet Sink")
+                .tooltip("ZNet Sink · 已停止")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&tray_menu)
+                .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => toggle_main_window(app),
                     "enable_proxy" => tray_enable_system_proxy(app.clone()),

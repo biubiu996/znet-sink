@@ -17,6 +17,7 @@ import {
   getGuiPolicyGroups,
   getConfigProxyNodes,
   getConfigPolicyGroups,
+  trayUpdateStatus,
 } from './core';
 import { error as toastError, success as toastSuccess } from './toast.svelte';
 import { coreEvents } from './core-events.svelte';
@@ -110,6 +111,7 @@ class GuiStateStore {
   async refreshConnectionStatus() {
     try {
       this.connection = await getGuiConnectionStatus();
+      this.syncTrayStatus();
     } catch {
       this.connection = null;
     }
@@ -179,10 +181,21 @@ class GuiStateStore {
     return e?.message ?? e ?? '未知错误';
   }
 
+  /**
+   * Mirror the current connection/process state onto the system-tray icon
+   * (tooltip + menu item enabled states). Called after every status
+   * refresh so the tray stays in sync even when the window is hidden.
+   * Best-effort: silently ignored outside Tauri.
+   */
+  private syncTrayStatus() {
+    void trayUpdateStatus(this.isProcessRunning, this.isConnected).catch(() => {});
+  }
+
   async connect() {
     this.isConnecting = true;
     try {
       this.connection = await guiConnect();
+      this.syncTrayStatus();
       toastSuccess('系统代理已开启，服务已生效');
       coreEvents.start(); // re-subscribe after core is running
       await Promise.allSettled([
@@ -202,6 +215,7 @@ class GuiStateStore {
     this.isDisconnecting = true;
     try {
       this.connection = await guiDisconnect();
+      this.syncTrayStatus();
       toastSuccess('系统代理已关闭，内核已停止');
       await Promise.allSettled([
         this.refreshProxyMode(),

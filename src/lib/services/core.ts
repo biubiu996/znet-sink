@@ -437,6 +437,17 @@ export async function guiProbePolicy(policyTag: string): Promise<unknown> {
   return invoke('gui_probe_policy', { policyTag });
 }
 
+// ── System tray status sync ──
+
+/**
+ * Push the current kernel / proxy state to the system-tray icon so the
+ * tooltip and menu item enabled states stay in sync without the user
+ * opening the window. Best-effort — no-op outside Tauri.
+ */
+export async function trayUpdateStatus(running: boolean, connected: boolean): Promise<void> {
+  return invoke('tray_update_status', { running, connected });
+}
+
 // ── Debug ──
 
 import type { DebugFrame } from '$lib/types/debug';
