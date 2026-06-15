@@ -64,6 +64,20 @@ export interface ConfigProxyNode {
   tag: string;
   protocol: string;
   isSelector: boolean;
+  /** Server hostname / IP (from `protocol.server`). */
+  server?: string;
+  /** Remote port (from `protocol.port`). */
+  port?: number;
+  /** Whether the outbound supports UDP relay. */
+  udp?: boolean;
+  /** Transport network type: tcp / ws / grpc / h2. */
+  network?: string;
+  /** Whether TLS is enabled. */
+  tls?: boolean;
+  /** Server Name Indication. */
+  sni?: string;
+  /** Cipher / encryption algorithm. */
+  cipher?: string;
 }
 
 export interface PolicyOutbound {

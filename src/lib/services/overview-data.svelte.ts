@@ -55,6 +55,7 @@ function parseNode(item: unknown, index: number): ProxyNode | null {
 
   return {
     id: typeof obj['id'] === 'string' ? obj['id'] : `${name}-${index}`,
+    tag: name,
     name: name,
     protocol: protocol,
     delay: delay,
@@ -78,7 +79,7 @@ function extractPolicyNodes(data: unknown): ProxyNode[] {
 
 function parsePolicyMember(item: unknown, selected: string | null, index: number): ProxyNode | null {
   if (typeof item === 'string') {
-    return { id: item, name: item, protocol: 'Zero', delay: 0, domain: selected === item ? 'selected' : 'policy' };
+    return { id: item, tag: item, name: item, protocol: 'Zero', delay: 0, domain: selected === item ? 'selected' : 'policy' };
   }
   if (!item || typeof item !== 'object') return null;
 
@@ -94,6 +95,7 @@ function parsePolicyMember(item: unknown, selected: string | null, index: number
 
   return {
     id: stringFrom(obj, ['id']) ?? `${name}-${index}`,
+    tag: name,
     name,
     protocol,
     delay,
