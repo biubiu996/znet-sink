@@ -130,7 +130,8 @@ fn real_world_config_extracts_nodes_and_policy_group() {
                     "password": "redacted",
                     "port": 37077,
                     "server": "redacted.example.com",
-                    "type": "shadowsocks"
+                    "type": "shadowsocks",
+                    "udp": true
                 },
                 "tag": "ss-in"
             },
@@ -162,6 +163,19 @@ fn real_world_config_extracts_nodes_and_policy_group() {
     assert_eq!(nodes[2].tag, "tr-sg");
     assert_eq!(nodes[2].protocol, "trojan");
 
+    // ── New: static attribute extraction ──
+    // shadowsocks node
+    assert_eq!(nodes[1].server.as_deref(), Some("redacted.example.com"));
+    assert_eq!(nodes[1].port, Some(37077));
+    assert_eq!(nodes[1].udp, Some(true)); // explicit `udp: true`
+    assert_eq!(nodes[1].cipher.as_deref(), Some("chacha20-ietf-poly1305"));
+    // trojan node — TLS inferred from sni/insecure presence
+    assert_eq!(nodes[2].port, Some(14688));
+    assert_eq!(nodes[2].tls, Some(true));
+    assert_eq!(nodes[2].sni.as_deref(), Some("redacted.example.com"));
+    // trojan has no explicit udp flag and isn't a UDP-native protocol
+    assert_eq!(nodes[2].udp, None);
+
     let groups = config::policy_groups_from_config(&config);
     assert_eq!(groups.len(), 1, "expected one policy group");
     assert_eq!(groups[0].name, "proxy");
@@ -181,4 +195,47 @@ fn real_world_config_extracts_nodes_and_policy_group() {
         .filter_map(|m| m.kind.as_deref())
         .collect();
     assert_eq!(member_kinds, vec!["shadowsocks", "trojan", "direct"]);
+}
+
+#[test]
+fn proxy_nodes_infers_udp_for_native_protocols() {
+    let nodes = config::proxy_nodes_from_config(&json!({
+        "outbounds": [
+            {
+                "tag": "hy",
+                "protocol": { "type": "hysteria2", "server": "h.example.com", "port": 443 }
+            },
+            {
+                "tag": "wg",
+                "type": "wireguard"
+            }
+        ]
+    }));
+
+    // hysteria2 / wireguard are UDP-native → inferred true even without `udp` field
+    assert_eq!(nodes[0].udp, Some(true));
+    assert_eq!(nodes[1].udp, Some(true));
+}
+
+#[test]
+fn proxy_nodes_extracts_network_and_tls() {
+    let nodes = config::proxy_nodes_from_config(&json!({
+        "outbounds": [
+            {
+                "tag": "vmess-ws",
+                "protocol": {
+                    "type": "vmess",
+                    "server": "v.example.com",
+                    "port": 443,
+                    "network": "ws",
+                    "tls": true,
+                    "sni": "v.example.com"
+                }
+            }
+        ]
+    }));
+
+    assert_eq!(nodes[0].network.as_deref(), Some("ws"));
+    assert_eq!(nodes[0].tls, Some(true));
+    assert_eq!(nodes[0].sni.as_deref(), Some("v.example.com"));
 }

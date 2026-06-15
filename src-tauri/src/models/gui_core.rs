@@ -217,6 +217,29 @@ pub struct ConfigProxyNode {
     pub tag: String,
     pub protocol: String,
     pub is_selector: bool,
+    /// Server hostname / IP (from `protocol.server`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    /// Remote port (from `protocol.port`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// Whether the outbound supports UDP relay (from `protocol.udp`).
+    /// Defaults to `Some(true)` for protocols that are UDP-capable by design
+    /// (e.g. `hysteria*`, `tuic`, `wireguard`) when the field is absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub udp: Option<bool>,
+    /// Transport network type: `tcp`, `ws`, `grpc`, `h2`, etc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    /// Whether TLS is enabled on the outbound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<bool>,
+    /// Server Name Indication (from `protocol.sni`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sni: Option<String>,
+    /// Cipher / encryption algorithm (from `protocol.cipher` / `security`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cipher: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

@@ -13,6 +13,18 @@ use crate::models::gui_core::{
 
 use super::parsing::{string_at, values_from_container};
 
+/// Protocols that are UDP-capable by design — when the config omits an
+/// explicit `udp` flag for these, we assume `true` so the node card can
+/// show an accurate UDP badge.
+const UDP_BY_DEFAULT: &[&str] = &[
+    "hysteria",
+    "hysteria2",
+    "tuic",
+    "wireguard",
+    "shadowsocks",
+    "socks",
+];
+
 /// Extract proxy nodes from the active proxy config file content.
 pub fn proxy_nodes_from_config(config_content: &Value) -> Vec<ConfigProxyNode> {
     let outbounds = config_content
@@ -27,11 +39,29 @@ pub fn proxy_nodes_from_config(config_content: &Value) -> Vec<ConfigProxyNode> {
             let tag = node.get("tag").and_then(|v| v.as_str())?;
             // Zero outbound format: {"tag":"...", "protocol":{"type":"shadowsocks", ...}}
             // Also support flat format: {"tag":"...", "type":"shadowsocks"}
-            let protocol = resolve_outbound_protocol(node);
+            let protocol = resolve_outbound_protocol(node).to_string();
+            let protocol_obj = node.get("protocol").and_then(|p| p.as_object());
             Some(ConfigProxyNode {
                 tag: tag.to_string(),
-                protocol: protocol.to_string(),
+                protocol: protocol.clone(),
                 is_selector: protocol.eq_ignore_ascii_case("selector"),
+                server: protocol_obj
+                    .and_then(|o| string_at_obj(o, &["server", "address", "host"]))
+                    .or_else(|| string_at(node, &["server", "address", "host"])),
+                port: protocol_obj
+                    .and_then(|o| u16_at_obj(o, &["port"]))
+                    .or_else(|| u16_at_value(node, &["port"])),
+                udp: resolve_udp(&protocol, protocol_obj, node),
+                network: protocol_obj
+                    .and_then(|o| string_at_obj(o, &["network", "transport"]))
+                    .map(|n| n.to_lowercase()),
+                tls: resolve_tls(protocol_obj, node),
+                sni: protocol_obj
+                    .and_then(|o| string_at_obj(o, &["sni", "server_name", "serverName"]))
+                    .or_else(|| string_at(node, &["sni"])),
+                cipher: protocol_obj
+                    .and_then(|o| string_at_obj(o, &["cipher", "security", "method"]))
+                    .or_else(|| string_at(node, &["cipher"])),
             })
         })
         .collect()
@@ -51,6 +81,109 @@ fn resolve_outbound_protocol(node: &Value) -> &str {
         // String: node.protocol (as bare string)
         .or_else(|| node.get("protocol").and_then(|v| v.as_str()))
         .unwrap_or("unknown")
+}
+
+/// Resolve UDP support.  Honors an explicit `udp` field when present;
+/// otherwise infers from the protocol name for UDP-native transports.
+fn resolve_udp(
+    protocol: &str,
+    protocol_obj: Option<&serde_json::Map<String, Value>>,
+    node: &Value,
+) -> Option<bool> {
+    if let Some(udp) = protocol_obj.and_then(|o| bool_at_obj(o, &["udp"])) {
+        return Some(udp);
+    }
+    if let Some(udp) = bool_at_value(node, &["udp"]) {
+        return Some(udp);
+    }
+    let proto_lower = protocol.to_ascii_lowercase();
+    if UDP_BY_DEFAULT.iter().any(|p| proto_lower.contains(p)) {
+        return Some(true);
+    }
+    None
+}
+
+/// Resolve TLS usage.  True when `tls` is explicitly enabled, or when
+/// TLS-implying fields (`sni`, `alpn`, `insecure`) are present.
+fn resolve_tls(
+    protocol_obj: Option<&serde_json::Map<String, Value>>,
+    node: &Value,
+) -> Option<bool> {
+    if let Some(tls) = protocol_obj.and_then(|o| bool_at_obj(o, &["tls", "tls_enabled"])) {
+        return Some(tls);
+    }
+    if let Some(tls) = bool_at_value(node, &["tls"]) {
+        return Some(tls);
+    }
+    let has_tls_marker = protocol_obj
+        .map(|o| {
+            o.contains_key("sni")
+                || o.contains_key("alpn")
+                || o.contains_key("insecure")
+                || o.contains_key("cert")
+        })
+        .unwrap_or(false);
+    if has_tls_marker {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+// ── Local scalar extractors over `serde_json::Map` ──────────────────
+// The shared `parsing::string_at` operates on `&Value`; these thin helpers
+// read directly from a `Map` so we can dig into the nested `protocol` object.
+
+fn string_at_obj(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|k| obj.get(*k).and_then(Value::as_str).map(String::from))
+}
+
+fn u16_at_obj(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<u16> {
+    keys.iter().find_map(|k| {
+        obj.get(*k).and_then(|v| {
+            v.as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .or_else(|| v.as_str().and_then(|s| s.parse::<u16>().ok()))
+        })
+    })
+}
+
+fn u16_at_value(value: &Value, keys: &[&str]) -> Option<u16> {
+    keys.iter().find_map(|k| {
+        value.get(*k).and_then(|v| {
+            v.as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .or_else(|| v.as_str().and_then(|s| s.parse::<u16>().ok()))
+        })
+    })
+}
+
+fn bool_at_obj(obj: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<bool> {
+    keys.iter().find_map(|k| {
+        obj.get(*k).and_then(|v| {
+            v.as_bool().or_else(|| {
+                v.as_str().and_then(|s| match s.to_ascii_lowercase().as_str() {
+                    "true" | "yes" | "1" => Some(true),
+                    "false" | "no" | "0" => Some(false),
+                    _ => None,
+                })
+            })
+        })
+    })
+}
+
+fn bool_at_value(value: &Value, keys: &[&str]) -> Option<bool> {
+    keys.iter().find_map(|k| {
+        value.get(*k).and_then(|v| {
+            v.as_bool().or_else(|| {
+                v.as_str().and_then(|s| match s.to_ascii_lowercase().as_str() {
+                    "true" | "yes" | "1" => Some(true),
+                    "false" | "no" | "0" => Some(false),
+                    _ => None,
+                })
+            })
+        })
+    })
 }
 
 /// Extract policy groups from the active proxy config file content.
