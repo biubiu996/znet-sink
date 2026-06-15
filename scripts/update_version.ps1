@@ -30,7 +30,7 @@ $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 Set-Location $RepoRoot
 
 # ── discover current version from package.json ───────────────────────────
-$packageJson = Get-Content "package.json" -Raw | ConvertFrom-Json
+$packageJson = [System.IO.File]::ReadAllText((Join-Path $RepoRoot "package.json")) | ConvertFrom-Json
 $CurrentVersion = $packageJson.version
 
 if (-not $CurrentVersion) {
@@ -44,6 +44,14 @@ if ($CurrentVersion -eq $Version) {
 Write-Host "Bumping $CurrentVersion → $Version" -ForegroundColor Cyan
 
 # ── update files ─────────────────────────────────────────────────────────
+# Use the .NET File API rather than Get-Content/Set-Content: Windows
+# PowerShell 5.1 defaults to the system ANSI codepage for text I/O, which
+# corrupts non-ASCII bytes (e.g. the Chinese description in package.json), and
+# Set-Content -Encoding UTF8 would prepend a BOM that breaks TOML/JSON
+# manifests. Set-Location does not sync to .NET's current directory, so read
+# and write through absolute paths joined to $RepoRoot.
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
 $files = @(
     "package.json",
     "src-tauri/Cargo.toml",
@@ -55,7 +63,8 @@ foreach ($file in $files) {
     if (-not (Test-Path $file)) {
         Die "expected manifest file not found: $file"
     }
-    $content = Get-Content $file -Raw
+    $fullPath = Join-Path $RepoRoot $file
+    $content = [System.IO.File]::ReadAllText($fullPath)
     $escapedCurrent = [regex]::Escape($CurrentVersion)
     # Replace first occurrence of the version string only (Cargo.lock has a
     # top-level entry plus dependency entries; we want the top-level one).
@@ -63,7 +72,7 @@ foreach ($file in $files) {
     if ($newContent -eq $content) {
         Die "version '$CurrentVersion' not found in $file"
     }
-    Set-Content -Path $file -Value $newContent -NoNewline
+    [System.IO.File]::WriteAllText($fullPath, $newContent, $utf8NoBom)
     Write-Host "  updated $file"
 }
 
