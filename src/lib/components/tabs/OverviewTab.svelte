@@ -21,12 +21,6 @@
     return `${seconds}s`;
   }
 
-  function formatTraffic(mb: number): string {
-    if (mb >= 1000) return `${(mb / 1000).toFixed(1)} GB`;
-    if (mb >= 1) return `${mb.toFixed(1)} MB`;
-    return `${(mb * 1000).toFixed(0)} KB`;
-  }
-
   function formatSpeed(speed: number): string {
     if (speed >= 1) return `${speed.toFixed(2)} MB/s`;
     if (speed * 1000 >= 1) return `${(speed * 1000).toFixed(0)} KB/s`;
@@ -58,24 +52,11 @@
   );
 
   const isConnected = $derived(guiState.isConnected);
-  const isDirectMode = $derived(guiState.proxyMode?.currentMode === 'direct');
   const proxyEnabled = $derived(guiState.isSystemProxyEnabled);
   const isCoreRunning = $derived(guiState.isProcessRunning);
   const isPowerBusy = $derived(guiState.isConnecting || guiState.isDisconnecting);
   const hasConfig = $derived(guiState.configNodes.length > 0 || guiState.proxyMode != null);
   const hasNodes = $derived(guiState.policyGroups.length > 0 || guiState.configNodes.length > 0);
-
-  // Diagnostic: unconditionally log when config nodes change
-  $effect(() => {
-    console.warn('[overview] state:', {
-      configNodes: guiState.configNodes.length,
-      policyGroups: guiState.policyGroups.length,
-      proxyMode: guiState.proxyMode?.currentMode,
-      hasConfig,
-      hasNodes,
-      tags: guiState.configNodes.map(n => `${n.tag}(${n.protocol},sel=${n.isSelector})`),
-    });
-  });
 
   const powerLabel = $derived(
     guiState.isConnecting ? '启用中' :
@@ -88,29 +69,22 @@
   // Current node for display — config nodes as primary source,
   // runtime data (selected, delay, alive) from policy groups when connected.
   const activeNodeName = $derived.by(() => {
-    // Prefer selected node from runtime policy groups
     for (const g of guiState.policyGroups) {
       if (g.selected) return g.selected;
     }
-    // Fall back: first non-selector config node, or any config node
     const cn = guiState.configNodes;
-    console.warn('[overview] activeNodeName: configNodes=', cn.length,
-      'selectors=', cn.filter(n => n.isSelector).map(n => n.tag),
-      'regular=', cn.filter(n => !n.isSelector).map(n => n.tag));
-    return cn.find(n => !n.isSelector)?.tag ?? cn[0]?.tag ?? null;
+    return cn.find((n) => !n.isSelector)?.tag ?? cn[0]?.tag ?? null;
   });
 
   // Active node info for Pro mode card
   const currentNode = $derived.by(() => {
-    // Try runtime data first
     for (const g of guiState.policyGroups) {
       if (g.selected) {
-        const member = g.outbounds.find(o => o.tag === g.selected);
+        const member = g.outbounds.find((o) => o.tag === g.selected);
         if (member) return { group: g.name, tag: member.tag, type: member.type, delayMs: member.delayMs, alive: member.alive };
       }
     }
-    // Fall back to config node
-    const cn = guiState.configNodes.find(n => !n.isSelector);
+    const cn = guiState.configNodes.find((n) => !n.isSelector);
     if (cn) return { group: '', tag: cn.tag, type: cn.protocol };
     return null;
   });
@@ -118,31 +92,28 @@
   // Flat node list for dropdown — config nodes as base, runtime data when connected
   const dropdownGroups = $derived.by(() => {
     const groups = guiState.policyGroups;
-    console.warn('[overview] dropdownGroups: policyGroups=', groups.length,
-      'configNodes=', guiState.configNodes.length,
-      'hasConfig=', guiState.configNodes.length > 0 || guiState.proxyMode != null);
     if (groups.length > 0) {
-      return groups.map(g => ({
+      return groups.map((g) => ({
         name: g.name,
         selected: g.selected,
-        nodes: g.outbounds.map(o => ({ tag: o.tag, type: o.type, delayMs: o.delayMs, alive: o.alive })),
+        nodes: g.outbounds.map((o) => ({ tag: o.tag, type: o.type, delayMs: o.delayMs, alive: o.alive })),
       }));
     }
     // Fall back to config nodes (no core required)
-    const selectorNodes = guiState.configNodes.filter(n => n.isSelector);
-    const regularNodes = guiState.configNodes.filter(n => !n.isSelector);
+    const selectorNodes = guiState.configNodes.filter((n) => n.isSelector);
+    const regularNodes = guiState.configNodes.filter((n) => !n.isSelector);
     if (selectorNodes.length > 0) {
-      return selectorNodes.map(s => ({
+      return selectorNodes.map((s) => ({
         name: s.tag,
         selected: null as string | null,
-        nodes: regularNodes.map(n => ({ tag: n.tag, type: n.protocol })),
+        nodes: regularNodes.map((n) => ({ tag: n.tag, type: n.protocol })),
       }));
     }
     if (regularNodes.length > 0) {
       return [{
         name: '节点',
         selected: null as string | null,
-        nodes: regularNodes.map(n => ({ tag: n.tag, type: n.protocol })),
+        nodes: regularNodes.map((n) => ({ tag: n.tag, type: n.protocol })),
       }];
     }
     return [];
@@ -176,20 +147,70 @@
     nodeDropdownOpen = false;
   }
 
-  async function toggleDirect() {
-    try {
-      if (isDirectMode) {
-        await guiState.setProxyMode('rule');
-      } else {
-        await guiState.setProxyMode('direct');
-      }
-    } catch { /* non-blocking */ }
-  }
+  // ── Pro status-strip derived values ──
+  const modeLabel = $derived(
+    guiState.proxyMode?.currentMode === 'global' ? '全局' :
+    guiState.proxyMode?.currentMode === 'direct' ? '直连' :
+    guiState.proxyMode?.currentMode === 'rule' ? '规则' : '—',
+  );
+  const isCoreAvailable = $derived(
+    guiState.connection?.coreAvailable === true || guiState.connection?.processState === 'running',
+  );
+  const coreStateLabel = $derived(
+    proxyEnabled ? '服务中' :
+    isCoreRunning ? '监听中' :
+    guiState.isStartingCore ? '启动中' :
+    guiState.connection?.processState === 'failed' ? '失败' : '已停止',
+  );
+  const coreStateTone = $derived(
+    proxyEnabled ? 'on' :
+    isCoreAvailable || guiState.isStartingCore ? 'listen' :
+    guiState.connection?.processState === 'failed' ? 'error' : 'off',
+  );
+  const uptimeLabel = $derived(formatUptime(guiState.connection?.uptimeMs));
 </script>
 
 {#if store.uiMode === 'pro'}
   <!-- ============ PRO MODE ============ -->
   <div class="flex-1 w-full flex flex-col gap-3 overflow-y-auto overflow-x-hidden animate-fade-in min-h-0 pr-0.5">
+
+    <!-- Row 0: Compact status strip — all key state at a glance -->
+    <div class="status-strip flex-shrink-0" role="status" aria-label="运行状态概览">
+      <div class="strip-item tone-{coreStateTone}" title="内核状态">
+        <span class="strip-dot" class:pulse={guiState.isStartingCore || guiState.isConnecting}></span>
+        <span class="strip-key">内核</span>
+        <span class="strip-val">{coreStateLabel}</span>
+      </div>
+      <span class="strip-sep" aria-hidden="true"></span>
+      <div class="strip-item {proxyEnabled ? 'tone-on' : 'tone-off'}" title="系统代理">
+        <span class="strip-key">代理</span>
+        <span class="strip-val">{proxyEnabled ? '已开启' : '未开启'}</span>
+      </div>
+      <span class="strip-sep" aria-hidden="true"></span>
+      <div class="strip-item {guiState.isTunEnabled ? 'tone-on' : 'tone-off'}" title="TUN 虚拟网卡">
+        <span class="strip-key">TUN</span>
+        <span class="strip-val">{guiState.isTunEnabled ? '已开启' : '未开启'}</span>
+      </div>
+      <span class="strip-sep" aria-hidden="true"></span>
+      <div class="strip-item" title="路由模式">
+        <span class="strip-key">模式</span>
+        <span class="strip-val">{modeLabel}</span>
+      </div>
+      <span class="strip-sep" aria-hidden="true"></span>
+      <div class="strip-item down" title="实时下载速度">
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 5 6 9 10 5"/></svg>
+        <span class="strip-val">{formatSpeed(currentDown)}</span>
+      </div>
+      <div class="strip-item up" title="实时上传速度">
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 7 6 3 10 7"/></svg>
+        <span class="strip-val">{formatSpeed(currentUp)}</span>
+      </div>
+      <div class="strip-spacer"></div>
+      <div class="strip-item muted" title="内核运行时长">
+        <span class="strip-key">在线</span>
+        <span class="strip-val">{uptimeLabel}</span>
+      </div>
+    </div>
 
     <!-- Row 1: Status cards -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 flex-shrink-0">
@@ -395,28 +416,8 @@
     </div>
     {/if}
 
-    <!-- Main row: stats | button | mode switches -->
+    <!-- Main row: power button centered as the sole focus -->
     <div class="lite-main">
-
-      <!-- Left: connection stats -->
-      <div class="lite-stats">
-        <div class="lite-stat-row">
-          <span class="lite-stat-label">在线</span>
-          <span class="lite-stat-val">{formatUptime(guiState.connection?.uptimeMs)}</span>
-        </div>
-        <div class="lite-stat-row">
-          <span class="lite-stat-label">↓ 总计</span>
-          <span class="lite-stat-val down">{formatTraffic(overviewData.totalDownMB)}</span>
-        </div>
-        <div class="lite-stat-row">
-          <span class="lite-stat-label">↑ 总计</span>
-          <span class="lite-stat-val up">{formatTraffic(overviewData.totalUpMB)}</span>
-        </div>
-        <div class="lite-stat-row">
-          <span class="lite-stat-label">连接</span>
-          <span class="lite-stat-val">{overviewData.activeConnections}</span>
-        </div>
-      </div>
 
       <!-- Center: big power button -->
       <button
@@ -429,70 +430,26 @@
       >
         {#if isPowerBusy}
           <span class="lite-power-spin">⟳</span>
-        {:else if proxyEnabled}
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
-            <line x1="12" y1="2" x2="12" y2="12"/>
-          </svg>
         {:else}
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
             <line x1="12" y1="2" x2="12" y2="12"/>
           </svg>
         {/if}
-        <span class="lite-power-label">
-          {powerLabel}
-        </span>
+        <span class="lite-power-label">{powerLabel}</span>
       </button>
-
-      <!-- Right: mode switches -->
-      <div class="lite-modes">
-        <div class="lite-mode-row">
-          <span class="lite-mode-label">系统代理</span>
-          <button
-            class="lite-toggle {proxyEnabled ? 'on' : ''}"
-            disabled
-            aria-label="系统代理状态"
-          >
-            <span class="lite-toggle-thumb"></span>
-          </button>
-        </div>
-        <div class="lite-mode-row">
-          <span class="lite-mode-label">TUN</span>
-          <button
-            class="lite-toggle {guiState.isTunEnabled ? 'on' : ''}"
-            onclick={() => guiState.toggleTun()}
-            disabled={guiState.isTunEnabled ? !guiState.canDisableTun : !guiState.canEnableTun}
-            title={guiState.isTunEnabled ? 'TUN 已开启' : 'TUN 未开启'}
-            aria-label="切换 TUN"
-          >
-            <span class="lite-toggle-thumb"></span>
-          </button>
-        </div>
-        <div class="lite-mode-row">
-          <span class="lite-mode-label">直连</span>
-          <button
-            class="lite-toggle {isDirectMode ? 'on' : ''}"
-            onclick={toggleDirect}
-            disabled={guiState.isSwitchingMode}
-            aria-label="切换直连模式"
-          >
-            <span class="lite-toggle-thumb"></span>
-          </button>
-        </div>
-      </div>
     </div>
 
-    <!-- Speed bar -->
-    <div class="lite-speed-bar">
-      <div class="lite-speed-item down">
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 5 6 9 10 5"/></svg>
-        <span class="lite-speed-val">{formatSpeed(currentDown)}</span>
-      </div>
-      <div class="lite-speed-item up">
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 7 6 3 10 7"/></svg>
-        <span class="lite-speed-val">{formatSpeed(currentUp)}</span>
-      </div>
+    <!-- Inline real-time speed (replaces the old stats column + speed bar) -->
+    <div class="lite-speed-inline">
+      <span class="lite-speed-down">
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 5 6 9 10 5"/></svg>
+        {formatSpeed(currentDown)}
+      </span>
+      <span class="lite-speed-up">
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="2 7 6 3 10 7"/></svg>
+        {formatSpeed(currentUp)}
+      </span>
     </div>
 
     <!-- Traffic chart -->
@@ -505,6 +462,77 @@
 
 <style>
   /* ─────────────── Shared (Pro) ─────────────── */
+
+  /* Compact status strip — one-row at-a-glance overview */
+  .status-strip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .status-strip::-webkit-scrollbar { display: none; }
+
+  .strip-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .strip-item.up { color: #22C55E; }
+  .strip-item.down { color: #3B82F6; }
+  .strip-item.muted { color: var(--muted-foreground); }
+  :global(.dark) .strip-item.up { color: #4ADE80; }
+  :global(.dark) .strip-item.down { color: #60A5FA; }
+
+  .strip-item.tone-on .strip-val { color: #16A34A; }
+  .strip-item.tone-listen .strip-val { color: #D97706; }
+  .strip-item.tone-error .strip-val { color: var(--destructive); }
+  .strip-item.tone-off .strip-val { color: var(--muted-foreground); }
+  :global(.dark) .strip-item.tone-on .strip-val { color: #4ADE80; }
+  :global(.dark) .strip-item.tone-listen .strip-val { color: #FBBF24; }
+
+  .strip-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    background: var(--muted-foreground); opacity: 0.5;
+    transition: background 0.2s ease, opacity 0.2s ease;
+  }
+  .strip-item.tone-on .strip-dot { background: #22C55E; opacity: 1; }
+  .strip-item.tone-listen .strip-dot { background: #F59E0B; opacity: 1; }
+  .strip-item.tone-error .strip-dot { background: #EF4444; opacity: 1; }
+  .strip-dot.pulse { animation: pulse-dot 1.4s ease-in-out infinite; }
+  @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  .strip-key {
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--muted-foreground);
+    opacity: 0.7;
+    letter-spacing: 0.01em;
+  }
+  .strip-val {
+    font-size: 12px;
+    font-weight: 600;
+    font-family: var(--font-mono, monospace);
+    font-variant-numeric: tabular-nums;
+    color: var(--foreground);
+  }
+
+  .strip-sep {
+    display: block;
+    width: 1px;
+    height: 13px;
+    background: var(--border);
+    border-radius: 1px;
+    flex-shrink: 0;
+  }
+  .strip-spacer { flex: 1; min-width: 8px; }
 
   .overview-card {
     background: var(--card);
@@ -695,45 +723,11 @@
   .lite-main {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: center;
     gap: 12px;
     flex-shrink: 0;
+    padding: 4px 0;
   }
-
-  /* Left stats */
-  .lite-stats {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 80px;
-    flex-shrink: 0;
-  }
-
-  .lite-stat-row {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 6px;
-  }
-
-  .lite-stat-label {
-    font-size: 11px;
-    color: var(--muted-foreground);
-    opacity: 0.7;
-    white-space: nowrap;
-  }
-
-  .lite-stat-val {
-    font-size: 12px;
-    font-weight: 600;
-    font-family: var(--font-mono, monospace);
-    font-variant-numeric: tabular-nums;
-    color: var(--foreground);
-  }
-  .lite-stat-val.down { color: #3B82F6; }
-  .lite-stat-val.up { color: #22C55E; }
-  :global(.dark) .lite-stat-val.down { color: #60A5FA; }
-  :global(.dark) .lite-stat-val.up { color: #4ADE80; }
 
   /* Big power button */
   .lite-power {
@@ -787,96 +781,30 @@
     white-space: nowrap;
   }
 
-  /* Right: mode switches */
-  .lite-modes {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    min-width: 80px;
-    flex-shrink: 0;
-  }
-
-  .lite-mode-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 6px;
-  }
-
-  .lite-mode-label {
-    font-size: 11px;
-    color: var(--muted-foreground);
-    white-space: nowrap;
-  }
-
-  .lite-toggle {
-    width: 32px;
-    height: 18px;
-    border-radius: 9px;
-    border: 1.5px solid var(--border);
-    background: var(--muted);
-    position: relative;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    flex-shrink: 0;
-    padding: 0;
-  }
-  .lite-toggle:disabled { opacity: 0.35; cursor: not-allowed; }
-
-  .lite-toggle.on {
-    background: rgba(34, 197, 94, 0.18);
-    border-color: rgba(34, 197, 94, 0.45);
-  }
-  :global(.dark) .lite-toggle.on { background: rgba(74,222,128,0.14); border-color: rgba(74,222,128,0.4); }
-
-  .lite-toggle-thumb {
-    position: absolute;
-    top: 1.5px;
-    left: 1.5px;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: var(--muted-foreground);
-    transition: all 0.2s ease;
-    opacity: 0.5;
-  }
-  .lite-toggle.on .lite-toggle-thumb {
-    left: 15px;
-    background: #22C55E;
-    opacity: 1;
-  }
-  :global(.dark) .lite-toggle.on .lite-toggle-thumb { background: #4ADE80; }
-
-  /* ---- Speed bar ---- */
-  .lite-speed-bar {
+  /* ---- Inline speed ---- */
+  .lite-speed-inline {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 20px;
-    padding: 8px 12px;
-    border-radius: 8px;
-    background: var(--card);
-    border: 1px solid var(--border);
+    gap: 18px;
     flex-shrink: 0;
   }
 
-  .lite-speed-item {
-    display: flex;
+  .lite-speed-down,
+  .lite-speed-up {
+    display: inline-flex;
     align-items: center;
-    gap: 5px;
-  }
-  .lite-speed-item.down { color: #3B82F6; }
-  .lite-speed-item.up { color: #22C55E; }
-  :global(.dark) .lite-speed-item.down { color: #60A5FA; }
-  :global(.dark) .lite-speed-item.up { color: #4ADE80; }
-
-  .lite-speed-val {
-    font-size: 12px;
+    gap: 4px;
+    font-size: 12.5px;
     font-weight: 700;
     font-family: var(--font-mono, monospace);
     font-variant-numeric: tabular-nums;
     color: var(--foreground);
   }
+  .lite-speed-down { color: #3B82F6; }
+  .lite-speed-up { color: #22C55E; }
+  :global(.dark) .lite-speed-down { color: #60A5FA; }
+  :global(.dark) .lite-speed-up { color: #4ADE80; }
 
   /* ---- Chart ---- */
   .lite-chart {
