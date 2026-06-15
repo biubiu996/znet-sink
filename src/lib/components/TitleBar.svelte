@@ -3,6 +3,7 @@
   import { getName, getVersion } from '@tauri-apps/api/app';
   import { store } from '$lib/services/store.svelte';
   import AppLogo from '$lib/components/AppLogo.svelte';
+  import KernelStatusPill from '$lib/components/core/KernelStatusPill.svelte';
 
   let appWindow: ReturnType<typeof getCurrentWindow> | null = null;
   let appName = $state('ZNet Sink');
@@ -93,8 +94,12 @@
     </div>
   </div>
 
-  <!-- Right: Window controls -->
-  <div class="flex items-center gap-0.5 pr-2 flex-shrink-0">
+  <!-- Right: Kernel status + Window controls -->
+  <div class="flex items-center gap-1 pr-2 flex-shrink-0">
+    <KernelStatusPill />
+
+    <span class="titlebar-divider flex-shrink-0" aria-hidden="true"></span>
+
     <button
       onclick={handleMinimize}
       class="titlebar-btn"
