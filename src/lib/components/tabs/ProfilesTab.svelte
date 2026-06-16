@@ -1,6 +1,7 @@
 <script lang="ts">
   import { open as openFile } from '@tauri-apps/plugin-dialog';
   import { store } from '$lib/services/store.svelte';
+  import { guiState } from '$lib/services/gui-state.svelte';
   import { handleAppError } from '$lib/services/core';
   import {
     importProxyConfig,
@@ -202,6 +203,17 @@
       }
 
       await refresh();
+
+      // When the saved profile is active, mirror it into GUI state so the
+      // node page picks up the new config without a manual tab switch.
+      if (draft.active) {
+        await Promise.allSettled([
+          guiState.refreshConfigNodes(),
+          guiState.refreshConfigPolicyGroups(),
+          guiState.refreshPolicyGroups(),
+        ]);
+      }
+
       saving = false;
       closeEditor();
     } catch (error) {
@@ -220,6 +232,13 @@
         closeEditor();
       }
       await refresh();
+      // Removing the active profile makes the backend promote another
+      // profile (or none), so re-sync GUI state to the new active config.
+      await Promise.allSettled([
+        guiState.refreshConfigNodes(),
+        guiState.refreshConfigPolicyGroups(),
+        guiState.refreshPolicyGroups(),
+      ]);
     } catch (error) {
       handleAppError(error, '删除代理配置失败');
     }
@@ -232,6 +251,14 @@
     try {
       await setActiveProxyConfig(id);
       await refresh();
+      // Propagate the new active config to GUI state so the node page
+      // and overview render the freshly activated configuration instead
+      // of stale data from the previously active profile.
+      await Promise.allSettled([
+        guiState.refreshConfigNodes(),
+        guiState.refreshConfigPolicyGroups(),
+        guiState.refreshPolicyGroups(),
+      ]);
     } catch (error) {
       handleAppError(error, '切换当前代理配置失败');
     } finally {

@@ -187,6 +187,9 @@ class CoreEventsService {
 
     if (eventType === 'policy.selected' || eventType === 'policy.probeCompleted') {
       awaitIgnore(overviewData.refreshPolicyNodes());
+      // Bump statusTick so policy-group watchers (node page, overview)
+      // re-fetch runtime data and reflect the new selection / latency.
+      this.statusTick++;
       return;
     }
 
