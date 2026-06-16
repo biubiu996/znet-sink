@@ -541,11 +541,24 @@ fn convert_clash_to_zero(clash: &Value) -> AppResult<Value> {
     outbounds.push(json!({ "tag": "block", "type": "block" }));
     outbounds.extend(proxies.iter().filter_map(convert_clash_proxy));
 
+    // Collect every resolvable tag up front — both proxy node tags and
+    // policy group names — so a group may reference another group (nested
+    // groups, e.g. a `select` group pointing at an `url-test` group).
+    // Without this, the referenced group's tag is unknown while each group
+    // is being converted, so intra-group references get dropped (and a
+    // group that references only other groups disappears entirely).
     let mut known_tags = outbounds
         .iter()
         .filter_map(|outbound| outbound.get("tag").and_then(Value::as_str))
         .map(ToString::to_string)
         .collect::<std::collections::BTreeSet<_>>();
+    if let Some(groups) = root.get("proxy-groups").and_then(Value::as_array) {
+        for group in groups {
+            if let Some(name) = group.as_object().and_then(|o| string_field(o, "name")) {
+                known_tags.insert(name);
+            }
+        }
+    }
 
     let outbound_groups = root
         .get("proxy-groups")
@@ -557,11 +570,6 @@ fn convert_clash_to_zero(clash: &Value) -> AppResult<Value> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    for group in &outbound_groups {
-        if let Some(tag) = group.get("tag").and_then(Value::as_str) {
-            known_tags.insert(tag.to_string());
-        }
-    }
 
     let rules = root
         .get("rules")
@@ -1001,6 +1009,47 @@ mod tests {
         assert_eq!(count_proxy_nodes(&content), 2);
     }
 
+    #[test]
+    fn clash_conversion_preserves_nested_group_references() {
+        // A `select` group ("Final") references an `url-test` group ("Auto"),
+        // and a second `select` group ("Meta") references only other groups.
+        // The kernel supports nesting groups inside groups, so all three
+        // groups must survive with their intra-group references intact.
+        let yaml = "\
+proxies:
+  - {name: HK, type: ss, server: s, port: 1}
+  - {name: JP, type: ss, server: s, port: 2}
+proxy-groups:
+  - {name: Auto, type: url-test, proxies: [HK, JP], url: http://x, interval: 300}
+  - {name: Final, type: select, proxies: [Auto, DIRECT]}
+  - {name: Meta, type: select, proxies: [Auto, Final]}
+";
+        let parsed = parse_subscription_content(yaml, "clash").unwrap();
+        let groups = parsed.content["outbound_groups"].as_array().unwrap();
+
+        let auto = groups.iter().find(|g| g["tag"] == "Auto").unwrap();
+        assert_eq!(auto["type"], "urltest");
+        assert_eq!(auto["outbounds"].as_array().unwrap().len(), 2);
+
+        let final_group = groups.iter().find(|g| g["tag"] == "Final").unwrap();
+        let final_refs: Vec<&str> = final_group["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(final_refs, vec!["Auto", "direct"]);
+
+        // A group that references only other groups must not be dropped.
+        let meta = groups.iter().find(|g| g["tag"] == "Meta").unwrap();
+        let meta_refs: Vec<&str> = meta["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(meta_refs, vec!["Auto", "Final"]);
+    }
     #[test]
     fn update_interval_floor_is_enforced() {
         assert!(validate_update_interval(Some(10)).is_err());
