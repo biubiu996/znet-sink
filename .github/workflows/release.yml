@@ -162,6 +162,12 @@ jobs:
           # Generate via: pnpm tauri signer generate -w ~/.tauri/znet-sink.key
           # Then add the private key content to repo Settings > Secrets > TAURI_SIGNING_PRIVATE_KEY
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # tauri signer keys are scrypt-encrypted even when generated
+          # "without password" (empty-password scrypt).  The bundler will
+          # not auto-use the empty password — without this env var it
+          # prompts interactively, which fails silently in CI and produces
+          # no .sig / no latest.json.  The password is empty by design.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'v__VERSION__'
@@ -179,110 +185,10 @@ jobs:
             --target ${{ matrix.target }}
             ${{ (runner.os == 'Windows' && contains(github.ref_name, '-')) && '--bundles nsis' || '' }}
 
-      # The Tauri bundler generates a platform-specific latest.json with
-      # a real signature (signed by TAURI_SIGNING_PRIVATE_KEY).  Capture it
-      # so the merge job can combine all platforms into a single manifest.
-      - name: Find and prepare latest.json for merge
-        shell: bash
-        run: |
-          LATEST_JSON=$(find src-tauri/target -name "latest.json" -not -path "*/node_modules/*" 2>/dev/null | head -1)
-          if [ -z "$LATEST_JSON" ]; then
-            echo "::warning::latest.json not found for ${{ matrix.platform-key }} — this platform will be missing from the update manifest"
-            mkdir -p upload
-            echo '{"platforms":{}}' > upload/latest.json
-          else
-            echo "Found latest.json at ${LATEST_JSON}"
-            mkdir -p upload
-            cp "${LATEST_JSON}" upload/latest.json
-          fi
-
-      - name: Upload latest.json as workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: updater-json-${{ matrix.platform-key }}
-          path: upload/latest.json
-
-  # ── Merge per-platform latest.json into a single update manifest ──
-  # Each build job produces a latest.json containing ONLY its own platform
-  # entry (with a real signature).  This job merges them all together so
-  # the Tauri updater plugin can verify the signature for any platform.
-  merge-updater-manifest:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download per-platform latest.json artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: updater-json-*
-          path: artifacts
-
-      - name: Merge manifests into one latest.json
-        shell: bash
-        run: |
-          echo "Artifacts found:"
-          find artifacts -name "latest.json" -exec echo "  {}" \;
-
-          # Merge: use first file as the base (carries version, notes,
-          # pub_date), then fold every file's platforms into one dict.
-          # jq '*' merges objects — each platform's signature & url are preserved.
-          #
-          # Bind the slurped array to $all BEFORE rebinding context to $base.
-          # After `| $base` the `.` no longer refers to the file list, so `.[]`
-          # would iterate over $base's own values (the version string, etc.),
-          # making `$item.platforms` null and crashing `{} * null`.
-          jq -s '
-            . as $all
-            | (.[0] // {}) as $base
-            | $base
-            | .platforms = (reduce $all[] as $item ({}; . * ($item.platforms // {})))
-          ' artifacts/updater-json-*/latest.json > latest.json
-
-          # Guarantee the top-level fields the updater plugin requires
-          # (version, pub_date) exist even when every platform fell back to
-          # the empty placeholder — otherwise serde fails with
-          # "missing field `version`" on the client.  The version comes
-          # from the git tag (e.g. v0.0.6 → 0.0.6).
-          VERSION="${GITHUB_REF_NAME#v}"
-          jq --arg version "$VERSION" \
-             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-             --arg notes "" \
-             '.version   = (.version   // $version)
-              | .pub_date = (.pub_date // $pub_date)
-              | .notes    = (.notes    // $notes)' \
-             latest.json > latest.json.tmp && mv latest.json.tmp latest.json
-
-          echo "=== Merged latest.json ==="
-          cat latest.json
-
-          # Report which expected platforms made it into the manifest.
-          # A missing platform means its build job fell back to the empty
-          # placeholder — usually because TAURI_SIGNING_PRIVATE_KEY was
-          # missing or did not match the pubkey in tauri.conf.json.
-          EXPECTED_PLATFORMS="windows-x86_64 darwin-aarch64 darwin-x86_64 linux-x86_64"
-          echo "=== Platform coverage ==="
-          for p in $EXPECTED_PLATFORMS; do
-            if jq -e --arg p "$p" '.platforms[$p]' latest.json >/dev/null; then
-              echo "  ok: $p"
-            else
-              echo "::warning::Platform $p is missing — its build job produced no signed bundle"
-            fi
-          done
-
-          # Hard fail if NO platform contributed a signed entry.  An empty
-          # platforms object silently breaks update checks for every client
-          # (the updater finds no entry for its host platform and errors),
-          # so refuse to publish rather than ship a broken manifest again.
-          PLATFORM_COUNT=$(jq '.platforms | length' latest.json)
-          if [ -z "$PLATFORM_COUNT" ] || [ "$PLATFORM_COUNT" -eq 0 ]; then
-            echo "::error::Merged latest.json has no platform entries — refusing to publish."
-            echo "::error::Every build job fell back to the placeholder."
-            echo "::error::Verify TAURI_SIGNING_PRIVATE_KEY matches the pubkey in tauri.conf.json."
-            exit 1
-          fi
-          echo "Publishing manifest with $PLATFORM_COUNT platform entry/entries."
-
-      - name: Upload merged latest.json to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: latest.json
+  # latest.json is generated and uploaded automatically by tauri-action's
+  # uploadUpdaterJson (default enabled).  Across the matrix, each platform
+  # job downloads the existing latest.json from the release, merges its own
+  # platform entry, and re-uploads — so the final manifest carries every
+  # platform.  Do NOT add a manual find/merge job: tauri build only emits
+  # .sig files (not latest.json) to target/, and a manual merge would
+  # overwrite tauri-action's correct output with an empty placeholder.
