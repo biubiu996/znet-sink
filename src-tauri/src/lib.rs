@@ -400,6 +400,7 @@ pub fn run() {
                                 // No child — we don't own this process, so
                                 // stop() will fall through to kill_external().
                             }
+                            let _ = crate::services::proxy_coordinator::update(&state);
                             return;
                         }
                     }
@@ -407,6 +408,7 @@ pub fn run() {
                     // Kernel not running (or was restarted due to path mismatch).
                     if !auto_start {
                         eprintln!("[ZNet] auto_start disabled, not starting kernel");
+                        let _ = crate::services::proxy_coordinator::update(&state);
                         return;
                     }
 
@@ -416,6 +418,11 @@ pub fn run() {
                         let _ = core_process::start(app_handle_start.clone(), state);
                     })
                     .await;
+
+                    // Now that kernel state is settled, sync the effective
+                    // proxy env vars once at startup (the coordinator is also
+                    // re-run on every proxy/core-state change later).
+                    let _ = crate::services::proxy_coordinator::update(&state);
                 });
             }
 

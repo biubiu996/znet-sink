@@ -38,13 +38,18 @@ pub async fn system_proxy_enable(
             .clone()
     };
     let port = { lock(state.app_config(), "app_config")?.local_proxy.port };
-    tauri::async_runtime::spawn_blocking(move || {
+    let status = tauri::async_runtime::spawn_blocking(move || {
         local_proxy::wait_until_listening(&host, port)?;
         system_proxy_guard::enable_with_guard(&host, port)?;
         system_proxy::status()
     })
     .await
-    .map_err(|e| crate::errors::AppError::internal(format!("system proxy thread panicked: {e}")))?
+    .map_err(|e| crate::errors::AppError::internal(format!("system proxy thread panicked: {e}")))?;
+
+    // The OS proxy just changed — recompute env vars so outbound requests
+    // (updater, kernel download, subscription) follow the new system proxy.
+    let _ = crate::services::proxy_coordinator::update(state.inner());
+    status
 }
 
 fn ensure_active_proxy_config(state: &AppState) -> AppResult<()> {
@@ -68,13 +73,20 @@ fn ensure_active_proxy_config(state: &AppState) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub async fn system_proxy_disable() -> AppResult<SystemProxyStatus> {
-    tauri::async_runtime::spawn_blocking(|| {
+pub async fn system_proxy_disable(
+    state: State<'_, AppState>,
+) -> AppResult<SystemProxyStatus> {
+    let status = tauri::async_runtime::spawn_blocking(|| {
         system_proxy_guard::disable_with_guard()?;
         system_proxy::status()
     })
     .await
-    .map_err(|e| crate::errors::AppError::internal(format!("system proxy thread panicked: {e}")))?
+    .map_err(|e| crate::errors::AppError::internal(format!("system proxy thread panicked: {e}")))?;
+
+    // OS proxy was cleared — recompute env vars (may fall back to the
+    // kernel mixed-port if the kernel is still running, or go direct).
+    let _ = crate::services::proxy_coordinator::update(state.inner());
+    status
 }
 
 #[tauri::command]

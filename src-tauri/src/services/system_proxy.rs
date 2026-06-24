@@ -478,13 +478,9 @@ fn set_proxy_platform(host: &str, port: u16, enable: bool) -> AppResult<()> {
             .output();
     }
 
-    // Also set environment variables for CLI tools
-    if enable {
-        std::env::set_var("http_proxy", &proxy_url);
-        std::env::set_var("https_proxy", &proxy_url);
-        std::env::set_var("HTTP_PROXY", &proxy_url);
-        std::env::set_var("HTTPS_PROXY", &proxy_url);
-    }
+    // NOTE: env-var proxy handling used to live here (Linux only). It moved
+    // to `proxy_coordinator`, which runs on every platform and recomputes
+    // on each proxy/core-state change — see that module for the rationale.
 
     gsettings_result
         .map(|_| ())

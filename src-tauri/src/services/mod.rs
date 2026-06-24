@@ -16,6 +16,7 @@ pub mod log_store;
 pub mod logs;
 pub mod probe;
 pub mod proxy_config;
+pub mod proxy_coordinator;
 pub mod proxy_mode;
 pub mod rule_set;
 pub mod subscription;

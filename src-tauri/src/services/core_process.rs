@@ -326,6 +326,10 @@ fn spawn_core_child(
         })),
     );
 
+    // Kernel just became reachable — its mixed-port is now a valid proxy
+    // candidate, so recompute the effective proxy env vars.
+    let _ = crate::services::proxy_coordinator::update(state);
+
     Ok(status)
 }
 
@@ -564,7 +568,9 @@ pub fn stop(state: State<'_, AppState>) -> AppResult<CoreProcessStatus> {
         // UI "stop" button actually works in that scenario.
         let _ = kill_external(state.inner());
         proxy_result?;
-        return refresh_status(state.inner());
+        let status = refresh_status(state.inner());
+        let _ = crate::services::proxy_coordinator::update(state.inner());
+        return status;
     };
 
     let pid = child.id();
@@ -594,6 +600,11 @@ pub fn stop(state: State<'_, AppState>) -> AppResult<CoreProcessStatus> {
             )?;
 
             proxy_result?;
+
+            // Kernel is gone — its mixed-port is no longer usable. Recompute
+            // env vars (falls back to OS proxy or direct).
+            let _ = crate::services::proxy_coordinator::update(state.inner());
+
             Ok(process.status.clone())
         }
         (Err(error), _) | (_, Err(error)) => {
