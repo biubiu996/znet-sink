@@ -592,32 +592,79 @@ fn parse_iso8601_to_unix_ms(s: &str) -> Option<u64> {
         return None;
     }
 
-    let date_parts: Vec<u32> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
+    let date_parts: Vec<i64> = parts[0].split('-').filter_map(|p| p.parse().ok()).collect();
     if date_parts.len() != 3 {
         return None;
     }
 
-    let time_parts: Vec<u32> = parts[1].split(':').filter_map(|p| p.parse().ok()).collect();
+    let time_parts: Vec<i64> = parts[1].split(':').filter_map(|p| p.parse().ok()).collect();
     if time_parts.len() < 2 {
         return None;
     }
 
-    // Simplified: use chrono would be better but this avoids adding another dep
-    // Approximate unix timestamp
-    let year = date_parts[0] as i64;
-    let month = date_parts[1] as i64;
-    let day = date_parts[2] as i64;
-    let hour = time_parts.get(0).copied().unwrap_or(0) as i64;
-    let minute = time_parts.get(1).copied().unwrap_or(0) as i64;
-    let second = time_parts.get(2).copied().unwrap_or(0) as i64;
+    let year = date_parts[0];
+    let month = date_parts[1];
+    let day = date_parts[2];
+    let hour = time_parts.get(0).copied().unwrap_or(0);
+    let minute = time_parts.get(1).copied().unwrap_or(0);
+    let second = time_parts.get(2).copied().unwrap_or(0);
 
-    // Days from year 0 approximation
-    let days = (year * 365 + year / 4 - year / 100 + year / 400)
-        + (month * 30 + month / 2).min(month * 31 - (month + 1) / 2)
-        + day;
+    // days_from_civil handles leap years/centuries correctly.  The old
+    // month-day approximation counted the current month as elapsed days,
+    // inflating the result by ~30 days and making every release appear
+    // one month in the future.
+    let days = days_from_civil(year, month, day);
     let secs = days * 86400 + hour * 3600 + minute * 60 + second;
+    if secs < 0 {
+        return None;
+    }
+    Some(secs as u64 * 1000)
+}
 
-    // Offset from 1970-01-01 (approximate: 719528 days)
-    let unix_secs = secs - 719528 * 86400;
-    Some(unix_secs as u64 * 1000)
+/// Days since 1970-01-01 for a proleptic-Gregorian (year, month, day).
+/// Howard Hinnant's algorithm — valid for any date, handles all leap-year
+/// rules without depending on chrono.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y / 400 } else { (y - 399) / 400 };
+    let yoe = y - era * 400; // [0, 399]
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146097 + doe - 719468
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn days_from_civil_epoch() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(1970, 1, 2), 1);
+        // 1970 is not a leap year
+        assert_eq!(days_from_civil(1971, 1, 1), 365);
+    }
+
+    #[test]
+    fn days_from_civil_leap_year_rules() {
+        // 1972 is a leap year: Mar 1 = 365 + 365 + 31(Jan) + 29(Feb)
+        assert_eq!(days_from_civil(1972, 3, 1), 790);
+        // 2000 is a leap year (divisible by 400)
+        assert_eq!(days_from_civil(2000, 3, 1), 11017);
+        // 2100 is NOT a leap year (divisible by 100 but not 400)
+        assert_eq!(days_from_civil(2100, 3, 1), 47541);
+    }
+
+    #[test]
+    fn parse_iso8601_known_timestamp() {
+        // 2026-05-20T10:30:00Z = 1779273000 seconds
+        let ms = parse_iso8601_to_unix_ms("2026-05-20T10:30:00Z").unwrap();
+        assert_eq!(ms, 1_779_273_000_000);
+    }
+
+    #[test]
+    fn parse_iso8601_rejects_malformed() {
+        assert_eq!(parse_iso8601_to_unix_ms("not-a-date"), None);
+        assert_eq!(parse_iso8601_to_unix_ms("2026-05-20"), None); // missing T-time
+    }
 }
