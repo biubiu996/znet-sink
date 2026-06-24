@@ -1,6 +1,6 @@
 {
   "name": "znetsink",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "ZNet Sink desktop client for ZeroDenet",
   "type": "module",
   "scripts": {
