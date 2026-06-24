@@ -75,10 +75,13 @@ class UpdaterService {
         this.updateAvailable = false;
         this.latestVersion = null;
         this.status = 'up-to-date';
+        // Keep the original error in the log (debug only) so we can
+        // diagnose why check() failed — without it this benign branch
+        // swallows the real cause and we're left guessing.
         void appendLog({
           source: 'app',
           level: 'debug',
-          message: `更新清单暂不可用，跳过更新检查 (v${this.currentVersion})`,
+          message: `更新清单暂不可用，跳过更新检查 (v${this.currentVersion}): ${msg}`,
         });
         return false;
       }
