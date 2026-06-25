@@ -4,6 +4,7 @@
   import { store } from '$lib/services/store.svelte';
   import AppLogo from '$lib/components/AppLogo.svelte';
   import KernelStatusPill from '$lib/components/core/KernelStatusPill.svelte';
+  import { updater } from '$lib/services/updater.svelte';
 
   let appWindow: ReturnType<typeof getCurrentWindow> | null = null;
   let appName = $state('ZNet Sink');
@@ -58,14 +59,23 @@
     >
       {appName}
     </span>
-    <!-- Version -->
+    <!-- Version — click opens About; yellow pulse dot when an update is available -->
     {#if appVersion}
-      <span
-        class="text-muted-foreground flex-shrink-0"
-        style="font-size: 11px; line-height: 1;"
+      <button
+        onclick={() => store.openSettings('about')}
+        class="titlebar-version"
+        title={updater.updateAvailable
+          ? `新版本 v${updater.latestVersion} 可用 — 点击查看`
+          : '关于'}
+        aria-label="关于"
       >
-        v{appVersion}
-      </span>
+        {#if updater.updateAvailable}
+          <span class="titlebar-update-dot" aria-hidden="true"></span>
+        {/if}
+        <span class="text-muted-foreground" style="font-size: 11px; line-height: 1;">
+          v{appVersion}
+        </span>
+      </button>
     {/if}
 
     <!-- Divider -->
@@ -183,5 +193,37 @@
   :global(.dark) .titlebar-btn-close:hover {
     background: rgba(248, 113, 113, 0.14);
     color: #F87171;
+  }
+
+  /* Version button — opens About; shows a pulsing dot when an update is pending */
+  .titlebar-version {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: none;
+    background: transparent;
+    padding: 3px 6px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.12s ease;
+    flex-shrink: 0;
+  }
+
+  .titlebar-version:hover {
+    background: var(--muted);
+  }
+
+  .titlebar-update-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #F59E0B;
+    flex-shrink: 0;
+    animation: titlebar-update-pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes titlebar-update-pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.35; }
   }
 </style>

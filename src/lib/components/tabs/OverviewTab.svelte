@@ -7,6 +7,7 @@
   import KernelVersionCard from '$lib/components/core/KernelVersionCard.svelte';
   import TunStackStatus from '$lib/components/core/TunStackStatus.svelte';
   import LogPanel from '$lib/components/core/LogPanel.svelte';
+  import UpdateBanner from '$lib/components/UpdateBanner.svelte';
   import {
     selectPolicy,
   } from '$lib/services/core';
@@ -170,6 +171,8 @@
   );
   const uptimeLabel = $derived(formatUptime(guiState.connection?.uptimeMs));
 </script>
+
+<UpdateBanner />
 
 {#if store.uiMode === 'pro'}
   <!-- ============ PRO MODE ============ -->
